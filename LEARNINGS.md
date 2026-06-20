@@ -19,60 +19,56 @@ This document captures every significant decision, problem, and lesson encounter
 
 ## Architecture Decisions
 
-### DTO Pattern — Separating DB Models from API Schemas
+### DTO Pattern — DB Models ≠ API Schemas
 
-**What:** Two distinct layers exist for the `User` concept:
-- `app/models/user.py` — SQLAlchemy ORM model. Knows about the database. Has `aadhaar_encrypted`, `pan_encrypted`, `aadhaar_masked`, `pan_masked`.
-- `app/schemas/user.py` — Pydantic DTOs. Knows about the API. Has `aadhaar_number`, `pan_number` (plaintext in, masked out).
+Two separate layers exist for `User`:
+- `app/models/user.py` — the SQLAlchemy ORM model, talks to the DB, has `aadhaar_encrypted`, `pan_encrypted`, `aadhaar_masked`, `pan_masked`
+- `app/schemas/user.py` — the Pydantic DTO, talks to the API, has `aadhaar_number`, `pan_number` (plaintext in, masked out)
 
-**Why:** If I exposed the DB model directly from the API:
-- Renaming a DB column breaks every API consumer immediately.
-- `aadhaar_encrypted` leaking into an API response would be confusing and dangerous.
-- Adding an internal audit column (like `deleted_by_admin_id`) would expose it to clients.
-
-The DTO layer acts as a contract. The DB can evolve independently.
+Why keep them separate:
+- Renaming a DB column would break every API consumer if the model was exposed directly
+- Internal columns like `aadhaar_encrypted` should never show up in an API response
+- The DB can change without breaking the API contract — the DTO is the barrier
 
 ### Service Layer — Thin Routes, Fat Services
 
-**What:** Routes in `app/routers/user.py` do nothing except call `UserService`. All logic — email uniqueness checks, PII encryption, pagination math, soft-delete guarding — lives in `app/services/user.py`.
+All business logic lives in `app/services/user.py`. Routes in `app/routers/user.py` do exactly one thing — call the service.
 
-**Why:** A route handler that does DB queries and business logic and validation is three jobs. When requirements change, you'd have to find logic scattered across route files. With a service layer, you can test business logic independently of HTTP.
+Why:
+- A route that queries the DB, validates business rules, and handles errors is doing three different jobs
+- Service layer means business logic can be tested independently from HTTP
+- When something breaks, you know exactly where to look
 
 ### Dependency Injection for DB Sessions
 
-**What:** `get_db()` in `dependencies.py` is a generator that yields a `Session` and closes it in `finally`.
+`get_db()` in `dependencies.py` yields a session and closes it in `finally`.
 
-**Why:** Without `finally`, any exception mid-request would leave the connection open, silently leaking it back into the pool. FastAPI's `Depends()` ensures the generator's cleanup code always runs — even on errors.
-
-**Other ways:** Could use a context manager (`with Session() as db`), but `Depends()` integrates cleanly with FastAPI's request lifecycle and makes test overrides trivial.
+Why not just open a session inside the handler:
+- Any exception mid-request would leave the connection open and leak it back into the pool
+- `Depends(get_db)` guarantees cleanup runs even when something crashes
+- Makes swapping the DB dependency in tests trivial — one line override
 
 ### URL as the Single Source of Truth for UI State
 
-**What:** All modal and page state lives in URL search params via React Router's `useSearchParams`:
-- `?page=2` — current list page
-- `?view={id}` — view modal open
-- `?edit={id}` — edit modal open
-- `?create=true` — create modal open
+All modal and page state lives in URL search params via `useSearchParams`:
+- `?page=2` — current page
+- `?view={id}` — view modal
+- `?edit={id}` — edit modal
+- `?create=true` — create modal
+- `?search=aarav&place=Mumbai` — active filters
 
-**Why:** `useState` for modal state is ephemeral — refresh the page and the modal is gone, the URL is plain `/`. This breaks the browser's back button, makes the state un-shareable, and violates the principle that URLs should represent application state.
+Why not `useState`:
+- `useState` disappears on refresh — the URL doesn't
+- Back button works correctly when state is in the URL
+- Anyone can share the URL and land on exactly the same view
+- Delete confirmation stays in `useState` though — you'd never bookmark a delete dialog
 
-With `useSearchParams`, refreshing `?page=2&view=abc-123` reopens page 2 with the view modal for that user — exactly as expected.
+### Frontend-Specific Decisions
 
-**Why not delete state in URL:** Delete confirmation is a destructive, short-lived action. There is no sensible use case for bookmarking or sharing a delete confirmation dialog. It stays in `useState`.
+A couple of smaller decisions worth noting:
 
-### `useUser(id)` in the View Modal — Always Fresh Data
-
-**What:** `UserViewModal` takes an `id` string and fetches the user itself via `useUser(id)` instead of receiving a `User` object as a prop.
-
-**Why — Pain Point:** The first version passed the `user` object directly from the list. After editing a user and going back to view, the modal still showed the old name/email because the `user` prop was stale (from the list cache before invalidation completed).
-
-**Fix:** The view modal fetches by ID. After an edit, `useUpdateUser` invalidates `[USERS_QUERY_KEY]`. TanStack Query's prefix matching means `[USERS_QUERY_KEY, id]` is also invalidated, so the view modal refetches and shows the updated data automatically.
-
-### `onSaved` vs `onClose` Split in UserForm
-
-**What:** `UserForm` has two callbacks — `onClose` (called on cancel or backdrop click) and `onSaved` (called after a successful save).
-
-**Why:** Both cancel and save previously called `onClose`, which just closed the modal. But after saving an edit we want to navigate back to the view modal (`?view={id}`), while cancel should fully close. With a single `onClose`, the caller couldn't distinguish between the two outcomes. The `onSaved` prop lets `UsersPage` map the two cases to different navigation targets.
+- **`useUser(id)` in view modal** — the view modal fetches by ID itself instead of receiving a `User` prop. The first version passed the object from the list and after editing, the modal showed stale data. Now after an edit, TanStack Query's prefix invalidation refetches the view automatically
+- **`onSaved` vs `onClose` in UserForm** — cancel and save previously both called `onClose`. But after saving an edit we want to navigate back to the view modal, not fully close. Two callbacks let the parent map the two outcomes to different navigation targets
 
 ---
 
@@ -80,60 +76,56 @@ With `useSearchParams`, refreshing `?page=2&view=abc-123` reopens page 2 with th
 
 ### 1. Never Store Aadhaar or PAN in Plaintext
 
-**What:** Both fields are encrypted with AES-256-GCM before the INSERT. The encrypted ciphertext lives in `aadhaar_encrypted` / `pan_encrypted`. A pre-computed masked version lives in `aadhaar_masked` / `pan_masked`.
+Both fields are encrypted with AES-256-GCM before INSERT. Ciphertext goes in `aadhaar_encrypted` / `pan_encrypted`. A pre-computed masked version goes in `aadhaar_masked` / `pan_masked`.
 
-**Why AES-256-GCM over alternatives:**
-- **vs AES-CBC:** GCM is *authenticated* encryption — it guarantees both confidentiality AND integrity. If a ciphertext is tampered with, `decrypt()` raises `InvalidTag` instead of silently returning garbage. CBC gives confidentiality only.
-- **vs Fernet:** Fernet uses AES-128-CBC internally. AES-256-GCM gives a larger key size and authenticated encryption.
-- **vs hashing:** Aadhaar/PAN need to be decryptable for verification. Hashing is one-way — correct for passwords, wrong here.
+Why AES-256-GCM:
+- **vs AES-CBC** — GCM is authenticated encryption. If the ciphertext is tampered with, `decrypt()` raises `InvalidTag`. CBC only gives you confidentiality, not integrity
+- **vs Fernet** — Fernet uses AES-128-CBC internally. GCM gives 256-bit keys and authenticated encryption
+- **vs hashing** — Aadhaar/PAN need to be decryptable for display. Hashing is one-way — right for passwords, wrong here
 
-**Implementation detail:** A fresh 12-byte nonce is generated per encryption via `os.urandom(12)`. Reusing a nonce with the same key catastrophically breaks GCM security — the entire keystream is exposed.
+A fresh 12-byte nonce is generated per encryption via `os.urandom(12)`. Reusing a nonce with the same key completely breaks GCM — the entire keystream is exposed.
 
 ### 2. Never Log PII
 
-**What:** Aadhaar and PAN plaintext never appears in any `logger.info()`, exception message, or `print()`. The `_to_response` method is the only place where masked values are assembled for the API.
+Aadhaar and PAN plaintext never appears in any log, exception message, or print statement. The only place they're assembled for the response is inside `_to_response()`.
 
-**Why:** Server logs are often shipped to third-party aggregators (Datadog, Splunk). A single debug print would silently write plaintext Aadhaar to a log file retained for years.
+Why this matters — server logs get shipped to third-party aggregators (Datadog, Splunk, etc.). One stray debug print could write plaintext Aadhaar to a log file that sits around for years.
 
 ### 3. UUID Primary Keys
 
-**What:** `id` is a `String(36)` UUID, not an auto-incrementing integer.
+`id` is a `String(36)` UUID, not an auto-incrementing integer.
 
-**Why:** With integer IDs, an attacker enumerates every user via `GET /users/1`, `/2`, `/3`. UUIDs are unpredictable — knowing one doesn't help find another. This is IDOR (Insecure Direct Object Reference) prevention.
+Why — with integer IDs an attacker can enumerate every user with `GET /users/1`, `/2`, `/3`. UUIDs are unpredictable. Knowing one doesn't help you find another. This is IDOR (Insecure Direct Object Reference) prevention.
 
 ### 4. Soft Delete
 
-**What:** `DELETE /users/{id}` sets `is_deleted = True`. The row is never physically removed from the database. All `GET` queries filter `WHERE is_deleted = False` so deleted users are invisible to the API and UI.
+`DELETE /users/{id}` sets `is_deleted = True`. The row is never removed from the DB. All `GET` queries filter `WHERE is_deleted = False`.
 
-**The journey — why I chose soft delete over hard delete:**
+The journey — I actually switched to hard delete (`db.delete(user)`) briefly, thinking it was simpler. Then I thought it through properly:
+- In any real SaaS product, accidental deletions happen — a wrong click, a bad script
+- With hard delete, the data is gone forever with no way back
+- With soft delete, even without a "Restore" button in the UI, a developer can recover the record by flipping `is_deleted = False`
+- Systems storing KYC data (Aadhaar, PAN) have regulatory data retention requirements — hard deletes make compliance impossible
 
-During development I actually switched this to hard delete (`db.delete(user)`) for a short time, thinking "just remove the row, it's simpler and cleaner." After thinking it through properly I reverted back to soft delete. Here is exactly why:
-
-In real SaaS products, accidental deletions happen — a wrong click, a bad script, an admin error. With a hard delete the row is gone forever and there is absolutely no way to get it back. With soft delete, even though we don't have a "Restore" button in the UI right now, the data is still sitting in the database. If something gets deleted by mistake, a developer can recover it by flipping `is_deleted` back to `False`. That option simply does not exist with hard delete.
-
-This is the standard in production SaaS: **delete from the user's view, not from the database.** The UI treats the user as gone (excluded from all lists, 404 on direct fetch) but the record is preserved for recovery, audits, and regulatory compliance. We can always build a restore feature later. We cannot un-delete a hard-deleted row.
-
-Additionally, systems that store KYC data (Aadhaar, PAN) have data retention requirements. Hard deletes make compliance impossible.
-
-**Learning:** Never choose hard delete as the default for user data in a production system. Soft delete costs one boolean column and one `WHERE` clause. The benefit — the ability to recover from mistakes — is priceless.
+The pattern: delete from the user's view, not from the database. Soft delete costs one boolean column and one WHERE clause. The ability to recover from a mistake is worth it.
 
 ### 5. CORS Restricted to Specific Origin
 
-**What:** `CORSMiddleware` reads `CORS_ORIGINS` from `.env`. Never `allow_origins=["*"]`.
+`CORSMiddleware` reads `CORS_ORIGINS` from `.env`. Never `allow_origins=["*"]`.
 
-**Why:** A wildcard CORS policy allows any website to make authenticated requests to the API on behalf of a logged-in user. Restricting to `http://localhost:5173` means only the known frontend can communicate with the backend.
+Why — a wildcard CORS policy lets any website make authenticated requests to the API on behalf of a logged-in user. Restricting to `http://localhost:5173` means only the known frontend can talk to the backend.
 
 ### 6. No Hardcoded Secrets
 
-**What:** `DATABASE_URL` and `ENCRYPTION_KEY` are read from `.env` via `pydantic-settings`. The `.env` file is in `.gitignore`.
+`DATABASE_URL` and `ENCRYPTION_KEY` are read from `.env` via `pydantic-settings`. The `.env` file is in `.gitignore`.
 
-**Why:** Hardcoded secrets are the #1 cause of GitHub credential leaks. `pydantic-settings` validates required env vars at startup — the app crashes immediately with a clear error rather than failing mysteriously later.
+Why — hardcoded secrets are the most common cause of credential leaks on GitHub. `pydantic-settings` validates that required vars exist at startup. The app crashes immediately with a clear error rather than failing mysteriously later when it actually tries to use the missing key.
 
-### 7. Pre-Masked Values Are Display-Only — Never Round-Tripped
+### 7. Pre-Masked Values Are Display-Only
 
-**What:** The API always returns `XXXXXXXX9012` for Aadhaar. The edit form leaves these fields blank by default and strips any blank PII from the PATCH payload before sending.
+The API always returns `XXXXXXXX9012` for Aadhaar. The edit form leaves PII fields blank by default and strips any empty PII from the PATCH payload before sending.
 
-**Why:** If the frontend pre-filled the masked value and the user saved without changing it, the backend would encrypt `XXXXXXXX9012` as if it were a real Aadhaar — silently corrupting the stored PII. Blank = keep existing encrypted value is the only safe default.
+Why — if the form pre-filled the masked value and the user saved without changing it, the backend would encrypt `XXXXXXXX9012` as a real Aadhaar. Silent data corruption. Blank means "keep what's already in the DB."
 
 ---
 
@@ -141,36 +133,35 @@ Additionally, systems that store KYC data (Aadhaar, PAN) have data retention req
 
 ### Pre-Masked PII Columns — Zero Decryption on List Reads
 
-**Problem:** Every `GET /users` page ran 10 AES-256-GCM decrypt calls (base64 decode + AESGCM.decrypt per user). Python's GIL means this is single-threaded CPU work — the dominant bottleneck for list response time.
+Every `GET /users` page was running 10 AES-256-GCM decrypt calls — one per user. Python's GIL means this is single-threaded CPU work. It was the dominant bottleneck.
 
-**Solution:** Added `aadhaar_masked` and `pan_masked` columns populated at write time (create + update). `_to_response` uses these pre-computed values directly — zero cryptography on reads.
+Fix:
+- Added `aadhaar_masked` and `pan_masked` columns, populated at write time
+- `_to_response` reads the pre-computed masked value directly — no cryptography on reads
+- Old rows (before the migration) fall back to decrypt + mask via a code-level check
 
-**Fast path** (new rows): read `aadhaar_masked` from DB column — one string copy.
-**Slow path fallback** (rows before migration): `aadhaar_masked` is NULL → decrypt + mask (backwards compat).
-
-**Why this beats the alternative:** Decryption is an O(N) cost on every read where N = page size. Writing is always one row. Moving the work to write time changes the ratio from "paid on every read" to "paid once on write."
+Why this works: decryption is O(N) cost on every read. Write is always one row. Moving the work to write time means you pay once, not on every page load.
 
 ### Composite Index `(is_deleted, created_at)`
 
-**What:** Added `Index("ix_users_is_deleted_created_at", "is_deleted", "created_at")` in addition to the single-column indexes.
-
-**Why composite instead of just `created_at`:** The list query is:
+The list query is:
 ```sql
 WHERE is_deleted = FALSE ORDER BY created_at DESC LIMIT 10
 ```
-A single index on `is_deleted` handles the filter but still requires a filesort for `ORDER BY`.
-A single index on `created_at` handles the sort but still requires a filter scan.
-A composite index on `(is_deleted, created_at)` lets MySQL satisfy both the WHERE and the ORDER BY in a single index scan — no separate sort step at all. At scale this is the difference between milliseconds and seconds.
 
-### Why Async SQLAlchemy Was Not the Right Fix Here
+- Single index on `is_deleted` → handles the filter but needs a filesort for ORDER BY
+- Single index on `created_at` → handles the sort but still scans for the filter
+- Composite index on `(is_deleted, created_at)` → MySQL satisfies both the WHERE and ORDER BY in one index scan, no separate sort step
 
-**Considered:** Switching from sync to async SQLAlchemy (`sqlalchemy.ext.asyncio` + `aiomysql`).
+At scale this is the difference between milliseconds and seconds.
 
-**Decided against (for now):** Async SQLAlchemy genuinely helps with *concurrent requests* — when 100 users hit the API simultaneously, async lets the event loop service other requests while waiting for DB I/O. But for a single sequential request, the DB query takes exactly the same wall-clock time whether it's sync or async. The latency a single user feels is determined by query time + decryption time, not by whether the event loop was blocked.
+### Why Async SQLAlchemy Was Not the Fix Here
 
-The pre-masked columns fix (eliminating decryption) had 10× more impact on perceived latency than async I/O would have for this workload pattern.
+Switching to `sqlalchemy.ext.asyncio` + `aiomysql` was considered. Decided against it — at least for now.
 
-**When async SQLAlchemy IS the right choice:** high-concurrency API under load (many simultaneous users), long-running DB queries (analytics, aggregations), mixed async workloads where you don't want DB I/O to starve other coroutines.
+Async SQLAlchemy helps with concurrent requests — when 100 users hit the API at once, async lets the event loop serve other requests while waiting on DB I/O. But for a single request, the query takes exactly the same wall-clock time whether it's sync or async. The latency a user feels is query time + decryption time, not event-loop blocking.
+
+The pre-masked columns fix had 10× more impact on perceived speed because it eliminated the actual bottleneck. Profile first, optimize the real thing.
 
 ---
 
@@ -178,33 +169,38 @@ The pre-masked columns fix (eliminating decryption) had 10× more impact on perc
 
 ### Alembic for All Schema Changes
 
-**What:** Every schema change — including adding `aadhaar_masked`, `pan_masked`, and the composite index — was done via `alembic revision --autogenerate` and `alembic upgrade head`. `Base.metadata.create_all()` was never used in production code.
+Every schema change was done via `alembic revision --autogenerate` + `alembic upgrade head`. `Base.metadata.create_all()` was never used in production code.
 
-**Why:** `create_all()` is a one-shot operation. It cannot alter an existing table. On day 2 when you add a column, it does nothing. Alembic generates versioned migration files, tracks each change in an `alembic_version` table, and supports `alembic downgrade` for rollback.
+Why:
+- `create_all()` is a one-shot operation — it can't alter an existing table
+- Alembic generates versioned migration files, tracks changes in `alembic_version`, and supports rollback via `alembic downgrade`
+- Every schema change is reviewable, reversible, and tracked in git
 
-### Migration Safety for Additive Schema Changes
+### Nullable Columns for Additive Migrations
 
-**What:** `aadhaar_masked` and `pan_masked` were added as `nullable=True` even though in steady-state they will always be populated.
+`aadhaar_masked` and `pan_masked` were added as `nullable=True` even though they'll always be populated going forward.
 
-**Why:** Making them `NOT NULL` with no default would cause the migration to fail on any existing rows. Nullable lets the migration run safely, existing rows fall back to the decrypt path in code, and all new rows get the masked values populated immediately. This is additive — it doesn't break anything that was already working.
+Why — making them `NOT NULL` with no default would fail the migration on any existing rows. Nullable lets the migration run cleanly. Existing rows fall back to the decrypt path in code. New rows get the masked values immediately.
 
 ### Connection Pooling with `pool_pre_ping`
 
-**What:** SQLAlchemy engine uses `pool_pre_ping=True`, `pool_size=10`, `max_overflow=20`.
+SQLAlchemy engine uses `pool_pre_ping=True`, `pool_size=10`, `max_overflow=20`.
 
-**Why:** `pool_pre_ping=True` tests each connection before handing it out. Without it, connections idle longer than MySQL's `wait_timeout` (default 8 hours) are silently broken. The next request using that connection fails with "MySQL server has gone away".
+Why `pool_pre_ping` — connections that have been idle longer than MySQL's `wait_timeout` (default 8 hours) are silently broken. Without pre-ping, the next request using that connection fails with "MySQL server has gone away". Pre-ping does a lightweight `SELECT 1` check before handing a connection out.
 
 ### Indexes on Queried Columns
 
-**What:** Single-column indexes on `email`, `name`, `is_deleted` plus a composite index on `(is_deleted, created_at)`.
+- Single-column indexes on `email`, `name`, `is_deleted`
+- Composite index on `(is_deleted, created_at)` for the paginated list query
+- Indexes on `place_of_birth` and `date_of_birth` for filter queries
 
-**Why:** Without indexes, every `GET /users` does a full table scan. At 1 million rows, that's the difference between a 2ms query and a 2-second query. The composite index specifically covers the combined WHERE + ORDER BY pattern of the paginated list query — one of the most common and performance-critical queries in the system.
+Without indexes every query is a full table scan. At 1 million rows that's the difference between 2ms and 2 seconds.
 
 ### `server_default` + Python `default` on Timestamps
 
-**What:** `created_at` and `updated_at` have both `server_default=func.now()` (DB-level) and `default=datetime.utcnow` (Python-level).
+`created_at` and `updated_at` have both `server_default=func.now()` (DB-level) and `default=datetime.utcnow` (Python-level).
 
-**Why — Pain Point:** Initially only `server_default=func.now()` was used. This works in MySQL but broke the SQLite test suite — SQLite doesn't recognize MySQL's `now()` function, so `created_at` was NULL after `db.refresh(user)`, causing Pydantic validation errors. Adding a Python-level `default` makes the ORM set the value explicitly before INSERT, making it database-agnostic.
+Why both — `server_default` alone works in MySQL but SQLite doesn't understand `now()`. During tests, `created_at` was NULL after `db.refresh(user)`, causing Pydantic validation to fail. Adding a Python-level `default` makes the ORM set the value explicitly before INSERT so it works in both.
 
 ---
 
@@ -212,87 +208,119 @@ The pre-masked columns fix (eliminating decryption) had 10× more impact on perc
 
 ### Versioned URL Prefix `/api/v1`
 
-**What:** All routes are mounted under `/api/v1/users`.
+All routes are under `/api/v1/users`.
 
-**Why:** Without versioning, any breaking change to a route forces all clients to update simultaneously. With `/api/v1`, you can run `/api/v2` in parallel and migrate clients gradually. The cost of adding `/v1` now is zero; retrofitting it later means changing every client.
+Why — without versioning, any breaking change forces all clients to update at once. With `/api/v1`, you can run `/api/v2` in parallel. Adding `/v1` now costs nothing. Retrofitting it later means changing every client.
 
 ### Proper HTTP Status Codes
 
-| Scenario | Status Code | Why |
+| Scenario | Code | Why |
 |---|---|---|
 | User created | 201 Created | 200 means "returned something existing"; 201 means "created something new" |
-| User deleted | 204 No Content | No body to return — 200 with an empty body is misleading |
-| Email conflict | 409 Conflict | 400 means "bad request syntax"; 409 means "valid request, but state conflict" |
-| Not found | 404 Not Found | Also returned for soft-deleted users — they are effectively gone from the API's perspective |
+| User deleted | 204 No Content | No body to return — 200 with empty body is misleading |
+| Email conflict | 409 Conflict | 400 is "bad request syntax"; 409 is "valid request but state conflict" |
+| Not found | 404 Not Found | Also returned for soft-deleted users — they're effectively gone |
 | Validation failure | 422 Unprocessable Entity | Standard for semantic validation errors in FastAPI |
 
 ### Pagination Required — Never Return All Rows
 
-**What:** `GET /users` requires `?page=1&size=10`. Size is capped at 100.
+`GET /users` requires `?page=1&size=10`. Size is capped at 100.
 
-**Why:** Returning all rows at once is a denial-of-service vector. At 100,000 users, a single `GET /users` request would serialize all rows to JSON, transmit megabytes over the network, and hold a DB connection for the entire duration. Pagination bounds the blast radius.
+Why — returning all rows is a denial-of-service vector. At 100,000 users a single request would serialize all rows, transmit megabytes, and hold a DB connection the entire time.
 
 ### Global Exception Handler — No Stack Traces to Clients
 
-**What:** `RequestValidationError` is caught globally and returns a clean `field -> message` JSON body.
+`RequestValidationError` is caught globally and returns a clean `field → message` JSON body.
 
-**Why:** FastAPI's default 422 body includes internal field paths like `body -> aadhaar_number -> value`. This leaks schema structure to potential attackers. The custom handler returns `{ "field": "aadhaar_number", "message": "Aadhaar must be exactly 12 digits" }` — useful for the frontend, safe externally.
+Why — FastAPI's default 422 body exposes internal field paths like `body -> aadhaar_number -> value`. That leaks schema structure. The custom handler returns `{ "field": "aadhaar_number", "message": "Aadhaar must be exactly 12 digits" }` — useful for the frontend, safe externally.
+
+### Strict Input Validation with Pydantic
+
+All incoming data is validated at the schema layer before it touches the service or DB:
+- `aadhaar_number` — must be exactly 12 digits (`^\d{12}$`)
+- `pan_number` — must follow `ABCDE1234F` format (`^[A-Z]{5}[0-9]{4}[A-Z]{1}$`), auto-uppercased
+- `primary_mobile` / `secondary_mobile` — E.164 format, 10–15 digits with optional `+` prefix
+- `date_of_birth` — must be in the past
+- `name`, `place_of_birth`, addresses — non-empty, whitespace stripped
+
+The validators are defined once as `Annotated` types (`AadhaarStr`, `PanStr`, `MobileStr`) and shared between `UserCreate` and `UserUpdate` — no duplication. FastAPI's global exception handler turns validation errors into clean `field → message` JSON before they reach the client.
+
+### Search and Filter APIs
+
+Extra APIs added beyond the assignment requirements (the assignment explicitly says "feel free to add more APIs if you feel their existence is needed"):
+- `GET /users?search=` — full-text across name and email using `LOWER(col) LIKE %term%`
+- `GET /users?place_of_birth=` — exact filter via a dropdown of existing values
+- `GET /users?dob_year_from=&dob_year_to=` — DOB year range
+- `GET /users?sort_by=name&sort_order=asc` — sortable columns
+- `GET /users/meta` — returns distinct `place_of_birth` values for the dropdown
 
 ---
 
 ## Frontend Best Practices
 
-### URL as Source of Truth — Not Component State
+### URL as Source of Truth — Not useState
 
-**What:** `useSearchParams` from React Router manages all modal and page state in the URL. No `useState` for anything that affects what the user sees.
+`useSearchParams` manages all modal and page state. No `useState` for anything that affects what the user sees.
 
-**Why:** `useState` is process-local and ephemeral. It disappears on refresh, breaks the back button, and makes states un-shareable. The URL is the canonical, persistent, shareable representation of application state — this is one of the web's fundamental design principles.
+Why — `useState` disappears on refresh. The URL doesn't. Back button works. State is shareable. Copy `?page=3&view=abc-123` and send it to someone — they land on exactly the same screen.
 
-**Practical benefit:** A user can copy `?page=3&view=abc-123`, send it to a teammate, and they land on page 3 with the view modal already open.
+### TanStack Query for Server State
 
-### TanStack Query — Server State vs Client State
+All API data lives in TanStack Query's cache. Local `useState` only handles the delete confirmation dialog (non-persistent, user-specific).
 
-**What:** All API data lives in TanStack Query's cache. Local `useState` is only used for the delete confirmation dialog (a non-persistent, user-specific interaction).
-
-**Why:** `useState` for server data creates a stale-data problem. After deleting a user, you'd have to manually remove them from the array. TanStack Query's `invalidateQueries` makes the list refetch automatically — the component doesn't need to know how the data changed.
+Why — `useState` for server data creates a stale-data problem. After deleting a user, you'd have to manually remove them from the local array. `invalidateQueries` handles it automatically — the list refetches and stays in sync.
 
 ### `placeholderData` for Smooth Pagination
 
-**What:** `useUsers` uses `placeholderData: (prev) => prev` to keep the previous page visible while the next page loads.
+`useUsers` uses `placeholderData: (prev) => prev` so the previous page stays visible while the next one loads.
 
-**Why:** Without this, every page change shows a blank loading state. With `placeholderData`, the old data stays visible and slightly faded — the user sees continuity, not a flash of emptiness.
+Why — without this, every page change shows a blank loading state. With it, the old data stays visible and faded. No flash of emptiness.
 
-### `startIndex` Derived from `data.page`, Not URL Param
+### `startIndex` from `data.page`, Not the URL Param
 
-**What:** The serial number column uses `startIndex = (data?.page - 1) * data?.size` — from the actual loaded data, not from the `page` URL param.
+The serial number column uses `startIndex = (data?.page - 1) * data?.size` — from the actual loaded data, not the URL param.
 
-**Why — Pain Point:** The URL `page` param updates immediately when the user clicks Next. But with `placeholderData`, the row data still shows the previous page while fetching. If `startIndex` is derived from the URL param, numbers flip to 11–20 while names still show 1–10 — a jarring desync. Deriving from `data.page` means both numbers and names change together when the new data arrives.
+Why — the URL `page` param updates immediately when you click Next, but with `placeholderData` the rows still show the previous page while fetching. If `startIndex` came from the URL, the numbers would flip to 11–20 while names still showed 1–10. Deriving from `data.page` means both update together.
 
-### Loading UX — Visible Feedback During Async Operations
+### Loading UX — Visible Feedback
 
-**What:** During page transitions (`isFetching && !isLoading`):
-1. A thin animated blue bar slides across the top of the table card.
-2. The table dims to 50% opacity with `pointer-events-none` to prevent accidental clicks.
+During page transitions (`isFetching && !isLoading`):
+- A thin animated blue bar slides across the top of the table
+- The table dims to 50% opacity with `pointer-events-none`
 
-**Why:** Without feedback, users can't tell whether their click registered, the network is slow, or the app is broken. The loading bar gives instant feedback. The dim signals "this data is stale, don't interact." `pointer-events-none` prevents double-clicking Next and firing duplicate requests.
+Why — without feedback users can't tell if their click registered or if the app is broken. The dim also prevents double-clicking Next and firing duplicate requests.
 
-### Axios Response Interceptor — Single Error Normalization Point
+### Debounced Search with First-Render Guard
 
-**What:** The Axios interceptor converts every API error to a plain `Error` with a string message.
+The search input waits 350ms after the user stops typing before firing the API call. A `useRef(true)` guard skips the effect on mount so it doesn't fire with an empty string on load.
 
-**Why:** Without this, every component writes `error.response?.data?.detail?.[0]?.message ?? error.message ?? 'Unknown'`. The interceptor does this once — `mutation.error.message` is always a clean string everywhere.
+Why the guard matters — `useEffect` always runs on mount. Without the guard, mounting the search component would call `handleSearch('')`, which reset `page` to 1 and wiped filter URL params every time the page loaded.
+
+### Axios Interceptor — Single Error Normalization Point
+
+The Axios interceptor converts every API error to a plain `Error` with a string message before it reaches any component.
+
+Why — without it every component would need to write `error.response?.data?.detail?.[0]?.message ?? error.message ?? 'Unknown'`. The interceptor does it once. `mutation.error.message` is always a clean string.
+
+### Contextual UI — Right Actions in the Right Place
+
+- **Row click** (viewing intent) → view modal shows Close + Edit User only — no Delete
+- **Trash icon** (delete intent) → review modal shows Close + Delete only — no Edit User
+- **A→Z / Z→A sort** lives inside the Filters dropdown — not as floating buttons outside it
+
+Why — showing a Delete button when someone just wants to view creates anxiety and risk of accidental deletion. Showing Edit when someone clicked the trash is irrelevant noise. Controls should match what the user is trying to do.
 
 ### Zod Schemas Mirror Backend Validators
 
-**What:** `lib/validations.ts` uses the same regex patterns as `app/schemas/user.py`.
+`lib/validations.ts` uses the same regex patterns as `app/schemas/user.py`.
 
-**Why:** Frontend validation is for UX (instant feedback). Backend validation is for security (the real guard). They must agree. Divergence means the UI accepts input the API rejects, creating confusing errors after a round trip.
+Why — frontend validation is for UX (instant feedback). Backend validation is for security (the real guard). If they disagree, the UI accepts input the API rejects — confusing and bad UX.
 
 ### `editUserSchema` — PII Optional in Edit Mode
 
-**What:** In edit mode, Aadhaar and PAN fields accept empty strings (blank = keep existing encrypted value in DB).
+In edit mode, Aadhaar and PAN fields accept an empty string (meaning "keep what's already stored"). The `userSchema` makes them required for create; `editUserSchema` extends it making them optional.
 
-**Why:** The API returns masked values. Re-submitting a masked value would encrypt `XXXXXXXX9012` as if it were a real Aadhaar — silent data corruption. Blank-optional PII with empty-string stripping in the submit handler is the correct pattern.
+Why — the API always returns masked values (`XXXXXXXX9012`). If the edit form pre-filled these and the user saved without changing them, the backend would encrypt the masked string as a real Aadhaar — silent data corruption. Empty string = no change to the stored encrypted value is the only safe design.
 
 ---
 
@@ -300,168 +328,111 @@ The pre-masked columns fix (eliminating decryption) had 10× more impact on perc
 
 ### Isolated Tests with `clean_tables` Fixture
 
-**What:** After every test, all rows are deleted via `engine.begin()`. The fixture is `autouse=True`.
+After every test, all rows are deleted. The fixture is `autouse=True`.
 
-**Why:** Test order should never matter. A test that passes in isolation but fails after another is a broken test. `autouse=True` ensures isolation without any test having to remember to clean up.
+Why — test order should never matter. A test that passes alone but fails after another test is a broken test. `autouse=True` ensures cleanup without any test having to remember to do it.
 
 ### Dependency Override — Not Mocking
 
-**What:** `app.dependency_overrides[get_db] = override_get_db` replaces the real DB session.
+`app.dependency_overrides[get_db] = override_get_db` replaces the real DB session with a test one.
 
-**Why:** Mocking the ORM (`mock.patch('app.services.user.Session')`) tests nothing real. The override lets the full stack — route → service → ORM → SQLite — execute, catching real bugs like missing commits, wrong query filters, and incorrect status codes.
+Why not mock the ORM — mocking `Session` tests nothing real. The override lets the full stack — route → service → ORM → SQLite — run for real. You catch actual bugs: wrong query filters, missing commits, incorrect status codes.
 
 ### SQLite for Test Speed
 
-**What:** Tests use SQLite in-memory (`sqlite://`) instead of MySQL.
+Tests use SQLite in-memory (`sqlite://`) instead of MySQL.
 
-**Why:** A 30-second test suite gets skipped. SQLite runs in-process — no network, no connection overhead — 28 tests complete in under 0.5 seconds. Trade-off: MySQL-specific behavior (strict mode, charset collation) isn't covered. Acceptable for this project; production teams use a dedicated MySQL test database.
+Why — a 30-second test suite gets skipped. SQLite runs in-process, no network, no connection overhead — 28 tests complete in under 0.5 seconds. Trade-off: MySQL-specific behavior isn't covered. Acceptable for this project.
 
 ---
 
 ## Pain Points Encountered
 
-### 1. Zod v4 Breaking Change — `.email()` Params Deprecated
-**Problem:** `z.string().email('message')` caused a deprecation warning in Zod v4.4.3. The string-param overload for format validators was deprecated entirely.
-**Solution:** Use `z.email({ error: 'message' })` — a new top-level email type in Zod v4, not chained from `z.string()`.
-**Learning:** Always check the installed library version before writing code. Zod v4 was a major breaking release with no backwards compat for format validators.
+### 1. Zod v4 — `.email()` Params Deprecated
 
-### 2. SQLite + `server_default=func.now()` — Timestamps Were NULL in Tests
-**Problem:** `created_at` returned `None` after `db.refresh(user)` in SQLite tests. SQLite doesn't understand MySQL's `now()` function in DDL.
-**Solution:** Added `default=datetime.utcnow` alongside `server_default` so the ORM sets the value before INSERT.
-**Learning:** `server_default` is DDL-only — the database evaluates it. `default` is ORM-level — SQLAlchemy evaluates it in Python. For cross-database code, both are needed.
+- **Problem:** `z.string().email('message')` caused a deprecation warning. The string-param overload was removed in Zod v4.4.3
+- **Fix:** Use `z.email({ error: 'message' })` — it's now a top-level validator, not chained from `z.string()`
+- **Learning:** Always check the installed version before writing validation code. Zod v4 was a major breaking release
+
+### 2. SQLite + `server_default=func.now()` — Timestamps NULL in Tests
+
+- **Problem:** `created_at` was `None` after `db.refresh(user)` in SQLite tests. SQLite doesn't understand MySQL's `now()` function in DDL
+- **Fix:** Added `default=datetime.utcnow` alongside `server_default` so the ORM sets the value in Python before INSERT
+- **Learning:** `server_default` is DDL-only — the database evaluates it. `default` is ORM-level — SQLAlchemy evaluates it in Python. For cross-database code you need both
 
 ### 3. `from conftest import VALID_USER` — ModuleNotFoundError
-**Problem:** `tests/__init__.py` makes pytest treat tests as a package, removing `conftest` from `sys.path`. Direct imports of conftest constants failed.
-**Solution:** Moved shared test data to `tests/helpers.py` and imported from there.
-**Learning:** pytest conftest is for *fixtures*, not for shared constants. Constants belong in a regular importable module.
+
+- **Problem:** `tests/__init__.py` makes pytest treat the folder as a package, removing `conftest` from `sys.path`. Direct imports failed
+- **Fix:** Moved shared test data to `tests/helpers.py`
+- **Learning:** conftest is for fixtures, not shared constants. Constants belong in a regular module
 
 ### 4. Node v21 Incompatible with create-vite@9
-**Problem:** `npm create vite@latest` failed because create-vite@9 requires Node ≥ 22.12.0. Machine had Node 21.4.0.
-**Solution:** Used `npm create vite@5` which supports Node 18+.
-**Learning:** Always check peer engine requirements. Node version managers (nvm, fnm) prevent this class of problem entirely.
+
+- **Problem:** `npm create vite@latest` failed — create-vite@9 requires Node ≥ 22.12.0, machine had Node 21.4.0
+- **Fix:** Used `npm create vite@5` which supports Node 18+
+- **Learning:** Check peer engine requirements before scaffolding. Use nvm/fnm so you can switch Node versions easily
 
 ### 5. Tailwind CSS v4 — Completely Different Setup
-**Problem:** `npx tailwindcss init -p` failed — the `tailwindcss` binary doesn't exist in v4. The old `@tailwind` directives are gone. PostCSS plugin is now separate from the Vite plugin.
-**Solution:** Installed `@tailwindcss/vite`, added it as a Vite plugin, used `@import "tailwindcss"` in CSS.
-**Learning:** Major version bumps in build tooling have completely different setup flows. Read the v4 migration guide, not the v3 quickstart.
 
-### 6. Edit Form + Masked PII — Data Corruption Risk
-**Problem:** The API returns `XXXXXXXX9012`. If the form pre-fills this and the user saves without changing it, the backend encrypts the masked string as if it were a real Aadhaar — silent corruption.
-**Solution:** PII fields in edit mode default to empty string. `editUserSchema` accepts empty strings. Empty PII is stripped from the PATCH payload before sending.
-**Learning:** Masked values are display-only. They must never travel back to the server as data.
+- **Problem:** `npx tailwindcss init -p` failed. The binary doesn't exist in v4. The `@tailwind` directives are gone. PostCSS plugin is now separate
+- **Fix:** Installed `@tailwindcss/vite`, added it as a Vite plugin, used `@import "tailwindcss"` in CSS
+- **Learning:** Major version bumps in build tooling often have a completely different setup flow. Read the v4 migration guide, not the v3 quickstart
+
+### 6. Edit Form + Masked PII — Silent Data Corruption Risk
+
+- **Problem:** The API returns `XXXXXXXX9012` for Aadhaar. If the form pre-fills this and the user saves without changing it, the backend encrypts the masked string as if it were a real Aadhaar number
+- **Fix:** PII fields in edit mode default to empty. `editUserSchema` accepts empty strings. Empty PII is stripped from the PATCH payload
+- **Learning:** Masked values are for display only. They must never travel back to the server as data
 
 ### 7. Serial Number Desync with `placeholderData`
-**Problem:** The `#` column used `startIndex = (page - 1) * PAGE_SIZE`. When clicking Next, `page` state updated immediately (numbers changed) but `placeholderData` kept showing the previous page's rows. Numbers said 11–20 while names still showed 1–10.
-**Solution:** Derive `startIndex` from `data.page` (the actual loaded response) instead of the URL `page` param. Numbers and names now change together.
-**Learning:** Any derived value that relates to fetched data should be derived from the fetched data, not from the state that triggered the fetch. The two are temporarily out of sync during loading.
 
-### 8. JSX Comment Inside Ternary Arm — TypeScript Parser Error
-**Problem:** Writing `/* comment */` before a JSX element inside a ternary expression arm (`condition ? a : (/* comment */ <div>)`) caused a TypeScript `Identifier expected` parser error even though it is syntactically valid JavaScript.
-**Solution:** Removed the inline comment. JSX context inside `{}` expressions does not reliably support `/* */` style comments before the return value.
-**Learning:** In JSX expressions, use `{/* comment */}` syntax inside JSX elements. Bare `/* */` comments inside JSX `{}` ternary branches are parser-hostile in TypeScript.
+- **Problem:** `startIndex = (page - 1) * PAGE_SIZE` updated immediately when clicking Next. But `placeholderData` kept showing the old page's rows. Numbers said 11–20 while names said 1–10
+- **Fix:** Derive `startIndex` from `data.page` (the actual loaded data), not the URL `page` param
+- **Learning:** Any derived UI value that depends on fetched data should come from that data, not from the state that triggered the fetch. They're temporarily out of sync during loading
 
-### 9. Sync SQLAlchemy Blocking FastAPI's Async Event Loop
-**Problem:** FastAPI is async-first but the project uses synchronous SQLAlchemy. Every DB query holds the entire event loop — no other coroutine can run while it waits. Under concurrent load, requests queue behind each other.
-**Considered fix:** Async SQLAlchemy (`sqlalchemy.ext.asyncio` + `aiomysql`).
-**Actual fix applied:** Pre-masked PII columns (eliminated per-row decryption overhead, the dominant single-request bottleneck) and a composite DB index (eliminated the sort step from the list query).
-**Learning:** Async I/O helps concurrency — many requests simultaneously. It does not reduce the latency of a single request in isolation. Profile first, then optimize the actual bottleneck. For this project, decryption overhead was the bottleneck, not event-loop blocking.
+### 8. JSX Comment Inside Ternary — TypeScript Parser Error
+
+- **Problem:** `/* comment */` before a JSX element inside a ternary arm caused `Identifier expected` — valid JavaScript, but Babel/TypeScript's JSX parser rejected it
+- **Fix:** Removed the inline comment
+- **Learning:** Inside JSX `{}` expressions, use `{/* comment */}` syntax. Bare `/* */` comments before JSX return values are parser-hostile
+
+### 9. Sync SQLAlchemy Blocking the Event Loop
+
+- **Problem:** FastAPI is async but SQLAlchemy (sync) holds the event loop on every query. Under concurrent load, requests queue
+- **Considered:** Switching to `sqlalchemy.ext.asyncio` + `aiomysql`
+- **Actual fix:** Pre-masked PII columns (removed decryption bottleneck) + composite DB index (removed filesort). These had 10× more impact than async I/O would have for this workload
+- **Learning:** Async helps concurrency, not single-request latency. Profile first, optimize the actual bottleneck
 
 ### 10. Stale uvicorn Process — New Routes Silently Ignored
-**Problem:** After adding `GET /users/meta` and search filter params to the router, the running server kept returning "User not found" for `/meta` (being caught by `/{user_id}`) and `total: 48` for all searches regardless of the `search` param. Every test showed the feature was broken.
-**Root cause:** The uvicorn process had been started *before* the code changes. It loaded old bytecode from `__pycache__` on startup and never picked up the new files, even with `--reload` active. A second uvicorn instance started on the same port would fail silently (port already in use) and the old process kept answering.
-**Proof:** FastAPI's own `TestClient` (in-process, no server) returned `total: 1, name: Aarav Sharma` for `search=aarav` and all 15 cities from `/meta` — confirming the code was 100% correct. The problem was purely the running process.
-**Solution:** Clear all `__pycache__` directories and hard-kill the old process before starting a new one. When port 8000 was held by an unkillable system process, switched to port 8080 — which worked immediately.
-**Learning:** When a FastAPI route misbehaves after adding new routes, suspect process state first. The code in files and the code in memory are two different things. Never assume `--reload` is a substitute for a clean restart.
 
-### 11. `useEffect` First-Render Side Effect — Search Fired on Mount
-**Problem:** The debounced search `useEffect(() => { onSearch(debouncedSearch) }, [debouncedSearch])` fired on component mount with an empty string, calling `handleSearch('')` which reset the `page` param to `'1'` and deleted the `letter` param — destroying URL state every time the component loaded.
-**Solution:** Added a `useRef(true)` guard that skips the effect on the very first render, allowing the debounce to fire only on actual user input.
-**Learning:** `useEffect` always runs on mount. Any effect that triggers a side effect (URL update, API call) must explicitly guard against the initial render if it should only respond to user-initiated changes.
+- **Problem:** After adding `GET /users/meta` and search params, the server kept returning "User not found" for `/meta` and `total: 48` for all searches regardless of the filter
+- **Root cause:** The uvicorn process started before the code changes, loaded old bytecode from `__pycache__`, and never picked up the new files. A second instance started on the same port failed silently — the old process kept answering
+- **Proof:** FastAPI's own `TestClient` (in-process) returned `total: 1, name: Aarav Sharma` for `search=aarav` — confirming the code was 100% correct, only the running process was wrong
+- **Fix:** Clear all `__pycache__` and hard-kill the old process. When port 8000 was held by an unkillable system process, switched to port 8080
+- **Learning:** When a route misbehaves after adding new routes, suspect process state before suspecting code. The files and the running memory are two different things. `--reload` is not the same as a clean restart
+
+### 11. `useEffect` First-Render — Search Reset URL State on Mount
+
+- **Problem:** The debounced search effect fired on mount with an empty string, calling `handleSearch('')` which reset `page` to `'1'` and deleted the `letter` param — wiping URL state every time the component loaded
+- **Fix:** Added a `useRef(true)` guard that skips the effect on the very first render
+- **Learning:** `useEffect` always runs on mount. If an effect should only respond to user input, guard against the initial render explicitly
 
 ### 12. `/meta` Route Must Be Defined Before `/{user_id}`
-**Problem:** `GET /api/v1/users/meta` kept returning `{"detail": "User not found"}` — FastAPI was matching "meta" as a `user_id` path parameter.
-**Solution:** In FastAPI (and Starlette), routes are matched in the order they are **defined** in the router. The `/meta` route was moved to appear before `/{user_id}` in the file. Literal paths always win over parameterized ones when defined first.
-**Learning:** In any path-parameter-based router, any literal sub-path (like `/meta`, `/export`, `/count`) that could be confused with a parameter must be registered *before* the parameterized route. This is a fundamental rule of route ordering in FastAPI/Express/Flask.
+
+- **Problem:** `GET /api/v1/users/meta` returned "User not found" — FastAPI was matching "meta" as a `user_id` path parameter
+- **Fix:** Moved `GET /meta` to appear before `GET /{user_id}` in the router file. Routes are matched in definition order
+- **Learning:** In any parameterized router (FastAPI, Express, Flask), literal sub-paths like `/meta`, `/export`, `/count` must be registered *before* the parameterized route. This is a fundamental routing rule
 
 ---
 
 ## What I Would Do Differently
 
-1. **Async SQLAlchemy from day one** — `sqlalchemy.ext.asyncio` + `aiomysql` is the right long-term architecture for FastAPI. The migration from sync to async touches every DB call (service layer, dependencies, tests). Starting async avoids this migration cost entirely. The only reason not to is a steeper learning curve.
+1. **Async SQLAlchemy from day one** — `sqlalchemy.ext.asyncio` + `aiomysql` is the right architecture for FastAPI. Migrating from sync to async touches every DB call. Starting async avoids that cost entirely
 
-2. **Refresh tokens + JWT auth** — The API has no authentication. In production, every route would require a Bearer token. FastAPI's OAuth2 + JWT is the standard approach, and it pairs naturally with the dependency injection pattern already in place.
+2. **JWT auth + refresh tokens** — the API has no authentication. In production every route needs a Bearer token. FastAPI's OAuth2 + JWT pairs cleanly with the `Depends()` pattern already in place
 
-3. **Dedicated MySQL test database** — SQLite is fast but it's a different engine. A `identityhub_test` MySQL database would catch MySQL-specific bugs (strict mode, charset issues, `ON UPDATE CURRENT_TIMESTAMP` behavior with timezone offsets).
+3. **Docker Compose** — a `docker-compose.yml` with MySQL + backend + frontend would let anyone spin up the full stack with one command. Removes the multi-step setup and "works on my machine" problems entirely
 
-4. **Rate limiting** — No protection against brute-forcing the create endpoint or the paginated list. `slowapi` (FastAPI rate limiter) adds this with two lines per route.
+4. **Encryption key rotation** — one key for all PII means rotating it requires re-encrypting every row in one migration. A KMS with versioned keys makes rotation safe and incremental — old rows keep their old key, new writes use the new one
 
-5. **Structured logging** — Using `structlog` or `loguru` for JSON-structured logs. Makes log aggregation, correlation, and searching dramatically easier in production. Important: PII fields must be explicitly excluded from structured log fields.
-
-6. **Docker Compose** — A `docker-compose.yml` with MySQL + backend + frontend would let anyone run the full stack with `docker compose up`, eliminating the multi-step manual setup. Also removes the "works on my machine" class of problems.
-
-7. **Field-level encryption key rotation** — The current design uses one key for all PII. Rotating the key requires re-encrypting every row in a single migration. A KMS (Key Management Service) with versioned keys makes rotation safe and incremental — old rows keep their version key, new writes use the new key.
-
-8. **Populate masked columns via a data migration** — The current migration adds `aadhaar_masked` and `pan_masked` as nullable and relies on a code-level fallback for old rows. A proper data migration would populate them for all existing rows at deploy time, eliminating the fallback branch entirely. The challenge: running application-layer decryption inside Alembic requires the encryption key to be available during migration, which complicates CI/CD pipelines.
-
-9. **Search, filter, and sort were added as extra APIs** — The assignment explicitly states *"Please feel free to add more APIs and also database columns if you feel their existence is needed for some purpose."* Search and filter are the most natural and useful extensions to a user management system, so they were implemented:
-   - `GET /users?search=` — full-text search across name and email (`LOWER(name) LIKE %term%`)
-   - `GET /users?place_of_birth=` — exact filter via a populated dropdown
-   - `GET /users?dob_year_from=&dob_year_to=` — date of birth year range
-   - `GET /users?sort_by=name&sort_order=asc` — sortable columns (name, date_of_birth, created_at)
-   - `GET /users/meta` — returns unique `place_of_birth` values for the dropdown
-   - Frontend: debounced search bar, Filters dropdown with Place, DOB range, and A→Z/Z→A sort, sortable table column headers, all state in URL params
-
-10. **Start fresh, restart clean** — During development of the search feature, the running uvicorn server was using stale compiled `.pyc` files and refused to pick up the new routes even after the source files were updated. The `/meta` endpoint kept returning "User not found" (being matched by `/{user_id}`) and search returned all records ignoring the filter. Root cause: the old process started before our code changes had the bytecode in memory and `--reload` didn't force a full reimport. Fix: always clear `__pycache__` completely and do a hard process restart. FastAPI TestClient confirmed the code was 100% correct; only the running server was stale. **Lesson:** when a route appears to misbehave after adding new routes, suspect process state before suspecting code.
-
----
-
-## Best Practices Checklist
-
-### Security
-- [x] PII (Aadhaar, PAN) encrypted with AES-256-GCM before DB storage
-- [x] Fresh random nonce per encryption — never reused
-- [x] PII never logged, never returned raw from the API
-- [x] UUID primary keys — prevents enumeration attacks
-- [x] Soft delete — rows never physically removed, audit trail preserved
-- [x] CORS restricted to specific origin — never wildcard
-- [x] No hardcoded secrets — all credentials in `.env`, excluded from git
-- [x] Masked values stripped from PATCH payload — never re-encrypted as data
-
-### Architecture
-- [x] DTO pattern — DB models never exposed directly to API consumers
-- [x] Service layer — business logic separated from route handlers
-- [x] `Depends(get_db)` — session always closed in `finally`, no connection leaks
-- [x] URL as source of truth for UI state — all modal + page state in search params
-
-### Database
-- [x] Alembic for all schema changes — no `create_all()` in production
-- [x] `pool_pre_ping=True` — no stale connection errors after idle periods
-- [x] Indexes on queried columns — email, name, is_deleted
-- [x] Composite index on `(is_deleted, created_at)` — covers both filter and sort in one scan
-- [x] Pre-masked PII columns — zero decryption on list reads, work done at write time
-- [x] Nullable columns for additive migrations — no breaking changes to existing rows
-
-### API Design
-- [x] Pagination required — no unbounded result sets, size capped at 100
-- [x] Versioned API prefix `/api/v1` — non-breaking future changes
-- [x] Proper HTTP status codes — 201, 204, 409, 404, 422
-- [x] Global exception handler — no stack traces to clients
-- [x] Search via `LOWER(col) LIKE %term%` — case-insensitive, no full-text index needed at this scale
-- [x] `/meta` endpoint for dropdown values — frontend never hardcodes data that lives in the DB
-- [x] Literal routes (`/meta`) defined before parameterized routes (`/{id}`) — correct FastAPI matching order
-
-### Frontend
-- [x] TanStack Query — server state managed correctly, not in useState
-- [x] `placeholderData` — smooth page transitions, no flash of empty state
-- [x] `startIndex` from `data.page` — serial numbers sync with row data, not URL param
-- [x] Zod + React Hook Form — client-side validation mirrors backend rules
-- [x] Axios interceptor — single error normalization point
-- [x] Loading UX — animated bar + table dim during page transitions
-- [x] Debounced search with first-render guard — API not called on mount, only on user input
-- [x] All filter + sort state in URL params — persistent across refresh, shareable
-- [x] Contextual UI — A→Z/Z→A sort lives inside the Filters dropdown, not as separate floating buttons
-
-### Testing
-- [x] Test isolation — rows wiped between every test via `autouse` fixture
-- [x] Dependency override in tests — full stack tested, no mocks
-- [x] 28 tests covering all CRUD paths, edge cases, and validation rules
+5. **Dedicated MySQL test database** — SQLite is fast but it's a different engine. `identityhub_test` in MySQL would catch strict mode and charset issues that SQLite silently ignores
