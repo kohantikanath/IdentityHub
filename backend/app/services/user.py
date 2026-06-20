@@ -28,6 +28,9 @@ class UserService:
             secondary_mobile=payload.secondary_mobile,
             aadhaar_encrypted=encrypt(payload.aadhaar_number),
             pan_encrypted=encrypt(payload.pan_number),
+            # Pre-compute masked values at write time so reads never need to decrypt
+            aadhaar_masked=mask_aadhaar(payload.aadhaar_number),
+            pan_masked=mask_pan(payload.pan_number),
             date_of_birth=payload.date_of_birth,
             place_of_birth=payload.place_of_birth,
             current_address=payload.current_address,
@@ -89,11 +92,15 @@ class UserService:
         if "email" in updates and updates["email"] != user.email:
             UserService._assert_email_available(db, str(updates["email"]))
 
-        # Re-encrypt PII fields if they are being updated
+        # Re-encrypt PII and refresh the pre-masked values together
         if "aadhaar_number" in updates:
-            user.aadhaar_encrypted = encrypt(updates.pop("aadhaar_number"))
+            plaintext = updates.pop("aadhaar_number")
+            user.aadhaar_encrypted = encrypt(plaintext)
+            user.aadhaar_masked = mask_aadhaar(plaintext)
         if "pan_number" in updates:
-            user.pan_encrypted = encrypt(updates.pop("pan_number"))
+            plaintext = updates.pop("pan_number")
+            user.pan_encrypted = encrypt(plaintext)
+            user.pan_masked = mask_pan(plaintext)
 
         for field, value in updates.items():
             setattr(user, field, str(value) if field == "email" else value)
@@ -103,7 +110,7 @@ class UserService:
         return UserService._to_response(user)
 
     # ------------------------------------------------------------------
-    # Soft delete (row stays in DB with is_deleted=True)
+    # Soft delete
     # ------------------------------------------------------------------
 
     @staticmethod
@@ -140,19 +147,19 @@ class UserService:
 
     @staticmethod
     def _to_response(user: User) -> UserResponse:
-        """
-        Converts a DB row to the API response shape.
-        Decryption and masking happen here — nowhere else in the codebase.
-        PII is never logged, never returned raw.
-        """
+        # Fast path: use pre-computed masked values stored at write time (no decryption)
+        # Slow path fallback: decrypt + mask for rows created before this migration
+        aadhaar = user.aadhaar_masked or mask_aadhaar(decrypt(user.aadhaar_encrypted))
+        pan = user.pan_masked or mask_pan(decrypt(user.pan_encrypted))
+
         return UserResponse(
             id=user.id,
             name=user.name,
             email=user.email,
             primary_mobile=user.primary_mobile,
             secondary_mobile=user.secondary_mobile,
-            aadhaar_number=mask_aadhaar(decrypt(user.aadhaar_encrypted)),
-            pan_number=mask_pan(decrypt(user.pan_encrypted)),
+            aadhaar_number=aadhaar,
+            pan_number=pan,
             date_of_birth=user.date_of_birth,
             place_of_birth=user.place_of_birth,
             current_address=user.current_address,
