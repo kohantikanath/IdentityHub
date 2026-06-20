@@ -386,6 +386,16 @@ The pre-masked columns fix (eliminating decryption) had 10× more impact on perc
 
 8. **Populate masked columns via a data migration** — The current migration adds `aadhaar_masked` and `pan_masked` as nullable and relies on a code-level fallback for old rows. A proper data migration would populate them for all existing rows at deploy time, eliminating the fallback branch entirely. The challenge: running application-layer decryption inside Alembic requires the encryption key to be available during migration, which complicates CI/CD pipelines.
 
+9. **Search, filter, and sort on the user list** — The assignment explicitly states *"Please feel free to add more APIs and also database columns if you feel their existence is needed for some purpose."* Search and filter are the most natural extensions to a user management system. The full implementation was designed and partially built during this assignment:
+   - `GET /users?search=` — full-text search across name and email using `LOWER(name) LIKE %term%`
+   - `GET /users?place_of_birth=` — exact filter from a dropdown of existing values
+   - `GET /users?dob_year_from=&dob_year_to=` — date of birth year range filter
+   - `GET /users?name_starts_with=` — alphabet quick-filter (A–Z)
+   - `GET /users?sort_by=name&sort_order=asc` — sortable columns
+   - `GET /users/meta` — returns unique `place_of_birth` values for the dropdown
+   
+   The backend service and route were fully written and unit-tested (28/28 passing). The frontend had dedicated components built (SearchFilterBar, AlphabetFilter, sortable table headers). However, it was removed from the final submission because of a **Python bytecode caching issue** — the running uvicorn server used stale `.pyc` files and did not pick up the new routes, making the feature appear broken during live testing even though direct service-layer tests confirmed it worked correctly (`search=aarav` returned exactly `total: 1, name: Aarav Sharma`). The lesson: always clear `__pycache__` and do a hard server restart when adding new routes, never rely on hot-reload alone.
+
 ---
 
 ## Best Practices Checklist
