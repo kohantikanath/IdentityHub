@@ -5,23 +5,19 @@ import UserTable from '../components/UserTable'
 import Pagination from '../components/Pagination'
 import UserForm from '../components/UserForm'
 import DeleteDialog from '../components/DeleteDialog'
+import UserViewModal from '../components/UserViewModal'
 import type { User } from '../types/user'
 
 const PAGE_SIZE = 10
 
 export default function UsersPage() {
   const [page, setPage] = useState(1)
-
-  // null  → modal closed
-  // User  → edit that user
+  const [viewUser, setViewUser] = useState<User | null>(null)
   const [editUser, setEditUser] = useState<User | null>(null)
   const [deleteUser, setDeleteUser] = useState<User | null>(null)
   const [showCreateForm, setShowCreateForm] = useState(false)
 
   const { data, isLoading, isError, error, refetch, isFetching } = useUsers(page, PAGE_SIZE)
-
-  const handleEdit = (user: User) => setEditUser(user)
-  const handleDelete = (user: User) => setDeleteUser(user)
 
   return (
     <div className="min-h-screen bg-gray-50">
@@ -37,6 +33,7 @@ export default function UsersPage() {
             <button
               onClick={() => refetch()}
               disabled={isFetching}
+              title="Force a fresh fetch from the server"
               className="flex items-center gap-2 px-4 py-2 text-sm text-gray-600 border border-gray-300 rounded-lg hover:bg-gray-50 disabled:opacity-50 transition-colors"
             >
               <RefreshCw size={15} className={isFetching ? 'animate-spin' : ''} />
@@ -66,8 +63,9 @@ export default function UsersPage() {
             <>
               <UserTable
                 users={data?.items ?? []}
-                onEdit={handleEdit}
-                onDelete={handleDelete}
+                onView={(user) => setViewUser(user)}
+                onEdit={(user) => setEditUser(user)}
+                onDelete={(user) => setDeleteUser(user)}
               />
               {data && data.total > 0 && (
                 <Pagination
@@ -82,6 +80,15 @@ export default function UsersPage() {
           )}
         </div>
       </div>
+
+      {/* View modal — opens on row click */}
+      {viewUser && (
+        <UserViewModal
+          user={viewUser}
+          onClose={() => setViewUser(null)}
+          onEdit={(user) => { setViewUser(null); setEditUser(user) }}
+        />
+      )}
 
       {/* Create modal */}
       {showCreateForm && (
