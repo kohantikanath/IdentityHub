@@ -3,6 +3,8 @@ import { Plus, RefreshCw } from 'lucide-react'
 import { useUsers } from '../hooks/useUsers'
 import UserTable from '../components/UserTable'
 import Pagination from '../components/Pagination'
+import UserForm from '../components/UserForm'
+import DeleteDialog from '../components/DeleteDialog'
 import type { User } from '../types/user'
 
 const PAGE_SIZE = 10
@@ -10,11 +12,16 @@ const PAGE_SIZE = 10
 export default function UsersPage() {
   const [page, setPage] = useState(1)
 
+  // null  → modal closed
+  // User  → edit that user
+  const [editUser, setEditUser] = useState<User | null>(null)
+  const [deleteUser, setDeleteUser] = useState<User | null>(null)
+  const [showCreateForm, setShowCreateForm] = useState(false)
+
   const { data, isLoading, isError, error, refetch, isFetching } = useUsers(page, PAGE_SIZE)
 
-  // Placeholders — will be replaced with modal state in Commits 13 and 14
-  const handleEdit = (_user: User) => {}
-  const handleDelete = (_user: User) => {}
+  const handleEdit = (user: User) => setEditUser(user)
+  const handleDelete = (user: User) => setDeleteUser(user)
 
   return (
     <div className="min-h-screen bg-gray-50">
@@ -36,7 +43,7 @@ export default function UsersPage() {
               Refresh
             </button>
             <button
-              onClick={() => {}}
+              onClick={() => setShowCreateForm(true)}
               className="flex items-center gap-2 px-4 py-2 text-sm font-medium text-white bg-blue-600 rounded-lg hover:bg-blue-700 transition-colors"
             >
               <Plus size={15} />
@@ -68,13 +75,28 @@ export default function UsersPage() {
                   totalPages={data.pages}
                   total={data.total}
                   size={PAGE_SIZE}
-                  onPageChange={(p) => setPage(p)}
+                  onPageChange={setPage}
                 />
               )}
             </>
           )}
         </div>
       </div>
+
+      {/* Create modal */}
+      {showCreateForm && (
+        <UserForm onClose={() => setShowCreateForm(false)} />
+      )}
+
+      {/* Edit modal */}
+      {editUser && (
+        <UserForm user={editUser} onClose={() => setEditUser(null)} />
+      )}
+
+      {/* Delete confirmation */}
+      {deleteUser && (
+        <DeleteDialog user={deleteUser} onClose={() => setDeleteUser(null)} />
+      )}
     </div>
   )
 }
