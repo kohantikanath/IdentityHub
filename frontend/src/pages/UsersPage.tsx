@@ -1,6 +1,7 @@
 import { useState } from 'react'
+import { useSearchParams } from 'react-router-dom'
 import { Plus, RefreshCw } from 'lucide-react'
-import { useUsers } from '../hooks/useUsers'
+import { useUsers, useUser } from '../hooks/useUsers'
 import UserTable from '../components/UserTable'
 import Pagination from '../components/Pagination'
 import UserForm from '../components/UserForm'
@@ -11,13 +12,33 @@ import type { User } from '../types/user'
 const PAGE_SIZE = 10
 
 export default function UsersPage() {
-  const [page, setPage] = useState(1)
-  const [viewUser, setViewUser] = useState<User | null>(null)
-  const [editUser, setEditUser] = useState<User | null>(null)
+  const [searchParams, setSearchParams] = useSearchParams()
+
+  // All modal + page state lives in the URL so refreshing restores the exact view
+  const page    = Number(searchParams.get('page')   ?? '1')
+  const viewId  = searchParams.get('view')   ?? ''
+  const editId  = searchParams.get('edit')   ?? ''
+  const isCreate = searchParams.get('create') === 'true'
+
+  // Delete stays local — no reason to persist a confirmation dialog in the URL
   const [deleteUser, setDeleteUser] = useState<User | null>(null)
-  const [showCreateForm, setShowCreateForm] = useState(false)
+
+  // Fetch the user being edited so UserForm can pre-fill from the URL directly
+  const { data: editingUser } = useUser(editId)
 
   const { data, isLoading, isError, error, refetch, isFetching } = useUsers(page, PAGE_SIZE)
+
+  // ── Navigation helpers ──────────────────────────────────────────────────────
+  const openView   = (id: string) => setSearchParams({ page: String(page), view: id })
+  const openEdit   = (id: string) => setSearchParams({ page: String(page), edit: id })
+  const openCreate = ()           => setSearchParams({ page: String(page), create: 'true' })
+  const closeModal = ()           => setSearchParams({ page: String(page) })
+  const backToView = (id: string) => setSearchParams({ page: String(page), view: id })
+  const goToPage   = (p: number)  => setSearchParams({ page: String(p) })
+
+  // ── Fix: derive startIndex from data.page so serial numbers only change
+  //    when the row data changes, not immediately when the user clicks Next ──
+  const startIndex = ((data?.page ?? 1) - 1) * (data?.size ?? PAGE_SIZE)
 
   return (
     <div className="min-h-screen bg-gray-50">
@@ -40,7 +61,7 @@ export default function UsersPage() {
               Refresh
             </button>
             <button
-              onClick={() => setShowCreateForm(true)}
+              onClick={openCreate}
               className="flex items-center gap-2 px-4 py-2 text-sm font-medium text-white bg-blue-600 rounded-lg hover:bg-blue-700 transition-colors"
             >
               <Plus size={15} />
@@ -63,9 +84,9 @@ export default function UsersPage() {
             <>
               <UserTable
                 users={data?.items ?? []}
-                startIndex={(page - 1) * PAGE_SIZE}
-                onView={(user) => setViewUser(user)}
-                onEdit={(user) => setEditUser(user)}
+                startIndex={startIndex}
+                onView={(user) => openView(user.id)}
+                onEdit={(user) => openEdit(user.id)}
                 onDelete={(user) => setDeleteUser(user)}
               />
               {data && data.total > 0 && (
@@ -74,7 +95,7 @@ export default function UsersPage() {
                   totalPages={data.pages}
                   total={data.total}
                   size={PAGE_SIZE}
-                  onPageChange={setPage}
+                  onPageChange={goToPage}
                 />
               )}
             </>
@@ -82,26 +103,30 @@ export default function UsersPage() {
         </div>
       </div>
 
-      {/* View modal — opens on row click */}
-      {viewUser && (
+      {/* View modal — ?view={id} */}
+      {viewId && (
         <UserViewModal
-          user={viewUser}
-          onClose={() => setViewUser(null)}
-          onEdit={(user) => { setViewUser(null); setEditUser(user) }}
+          id={viewId}
+          onClose={closeModal}
+          onEdit={(id) => openEdit(id)}
         />
       )}
 
-      {/* Create modal */}
-      {showCreateForm && (
-        <UserForm onClose={() => setShowCreateForm(false)} />
+      {/* Create modal — ?create=true */}
+      {isCreate && (
+        <UserForm onClose={closeModal} />
       )}
 
-      {/* Edit modal */}
-      {editUser && (
-        <UserForm user={editUser} onClose={() => setEditUser(null)} />
+      {/* Edit modal — ?edit={id} — waits for user data before rendering form */}
+      {editId && editingUser && (
+        <UserForm
+          user={editingUser}
+          onClose={closeModal}
+          onSaved={() => backToView(editId)}
+        />
       )}
 
-      {/* Delete confirmation */}
+      {/* Delete confirmation — local state, no URL needed */}
       {deleteUser && (
         <DeleteDialog user={deleteUser} onClose={() => setDeleteUser(null)} />
       )}

@@ -9,6 +9,7 @@ import type { User, UpdateUserPayload } from '../types/user'
 interface UserFormProps {
   user?: User   // provided → edit mode, absent → create mode
   onClose: () => void
+  onSaved?: () => void  // if provided, called after successful save instead of onClose
 }
 
 interface FieldProps {
@@ -37,7 +38,7 @@ const inputCls = (error?: string) =>
       : 'border-gray-300 focus:border-blue-500'
   }`
 
-export default function UserForm({ user, onClose }: UserFormProps) {
+export default function UserForm({ user, onClose, onSaved }: UserFormProps) {
   const isEdit = Boolean(user)
   const createUser = useCreateUser()
   const updateUser = useUpdateUser()
@@ -105,7 +106,7 @@ export default function UserForm({ user, onClose }: UserFormProps) {
           permanent_address: values.permanent_address!,
         })
       }
-      onClose()
+      ;(onSaved ?? onClose)()
     } catch {
       // error displayed via mutationError below
     }
