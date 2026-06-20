@@ -71,9 +71,22 @@ export default function UsersPage() {
         </div>
 
         {/* Table card */}
-        <div className="bg-white rounded-xl shadow-sm border border-gray-200">
+        <div className="bg-white rounded-xl shadow-sm border border-gray-200 relative">
+
+          {/* Page-change loading bar — thin animated stripe at the top of the card */}
+          {isFetching && !isLoading && (
+            <div className="absolute top-0 left-0 right-0 h-0.5 z-10 overflow-hidden rounded-t-xl bg-blue-100">
+              <div className="h-full bg-blue-500 animate-[loading_1s_ease-in-out_infinite]"
+                style={{ animation: 'loadbar 1.2s ease-in-out infinite' }} />
+            </div>
+          )}
+
           {isLoading ? (
-            <div className="flex items-center justify-center h-48 text-gray-400 text-sm">
+            <div className="flex flex-col items-center justify-center h-48 gap-3 text-gray-400 text-sm">
+              <svg className="animate-spin h-6 w-6 text-blue-500" fill="none" viewBox="0 0 24 24">
+                <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v4a4 4 0 00-4 4H4z" />
+              </svg>
               Loading users…
             </div>
           ) : isError ? (
@@ -81,7 +94,7 @@ export default function UsersPage() {
               {error?.message ?? 'Failed to load users'}
             </div>
           ) : (
-            <>
+            <div className={isFetching ? 'opacity-50 pointer-events-none transition-opacity duration-200' : 'transition-opacity duration-200'}>
               <UserTable
                 users={data?.items ?? []}
                 startIndex={startIndex}
@@ -98,7 +111,7 @@ export default function UsersPage() {
                   onPageChange={goToPage}
                 />
               )}
-            </>
+            </div>
           )}
         </div>
       </div>
