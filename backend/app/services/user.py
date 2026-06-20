@@ -116,7 +116,7 @@ class UserService:
     @staticmethod
     def delete_user(db: Session, user_id: str) -> None:
         user = UserService._get_active_or_404(db, user_id)
-        user.is_deleted = True
+        db.delete(user)
         db.commit()
 
     # ------------------------------------------------------------------

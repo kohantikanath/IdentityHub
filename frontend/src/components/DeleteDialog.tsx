@@ -34,14 +34,14 @@ export default function DeleteDialog({ user, onClose }: DeleteDialogProps) {
             </div>
             <div>
               <h2 className="text-lg font-semibold text-gray-900">Delete User</h2>
-              <p className="text-sm text-gray-500">This will hide the user from all views</p>
+              <p className="text-sm text-gray-500">This action cannot be undone</p>
             </div>
           </div>
 
           <p className="text-sm text-gray-700 mb-6">
             Are you sure you want to delete{' '}
             <span className="font-semibold text-gray-900">{user.name}</span>?{' '}
-            The record is soft-deleted and can be recovered from the database if needed.
+            This will permanently remove the user and cannot be undone.
           </p>
 
           {deleteUser.error && (
