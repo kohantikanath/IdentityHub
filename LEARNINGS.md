@@ -366,6 +366,23 @@ The pre-masked columns fix (eliminating decryption) had 10× more impact on perc
 **Actual fix applied:** Pre-masked PII columns (eliminated per-row decryption overhead, the dominant single-request bottleneck) and a composite DB index (eliminated the sort step from the list query).
 **Learning:** Async I/O helps concurrency — many requests simultaneously. It does not reduce the latency of a single request in isolation. Profile first, then optimize the actual bottleneck. For this project, decryption overhead was the bottleneck, not event-loop blocking.
 
+### 10. Stale uvicorn Process — New Routes Silently Ignored
+**Problem:** After adding `GET /users/meta` and search filter params to the router, the running server kept returning "User not found" for `/meta` (being caught by `/{user_id}`) and `total: 48` for all searches regardless of the `search` param. Every test showed the feature was broken.
+**Root cause:** The uvicorn process had been started *before* the code changes. It loaded old bytecode from `__pycache__` on startup and never picked up the new files, even with `--reload` active. A second uvicorn instance started on the same port would fail silently (port already in use) and the old process kept answering.
+**Proof:** FastAPI's own `TestClient` (in-process, no server) returned `total: 1, name: Aarav Sharma` for `search=aarav` and all 15 cities from `/meta` — confirming the code was 100% correct. The problem was purely the running process.
+**Solution:** Clear all `__pycache__` directories and hard-kill the old process before starting a new one. When port 8000 was held by an unkillable system process, switched to port 8080 — which worked immediately.
+**Learning:** When a FastAPI route misbehaves after adding new routes, suspect process state first. The code in files and the code in memory are two different things. Never assume `--reload` is a substitute for a clean restart.
+
+### 11. `useEffect` First-Render Side Effect — Search Fired on Mount
+**Problem:** The debounced search `useEffect(() => { onSearch(debouncedSearch) }, [debouncedSearch])` fired on component mount with an empty string, calling `handleSearch('')` which reset the `page` param to `'1'` and deleted the `letter` param — destroying URL state every time the component loaded.
+**Solution:** Added a `useRef(true)` guard that skips the effect on the very first render, allowing the debounce to fire only on actual user input.
+**Learning:** `useEffect` always runs on mount. Any effect that triggers a side effect (URL update, API call) must explicitly guard against the initial render if it should only respond to user-initiated changes.
+
+### 12. `/meta` Route Must Be Defined Before `/{user_id}`
+**Problem:** `GET /api/v1/users/meta` kept returning `{"detail": "User not found"}` — FastAPI was matching "meta" as a `user_id` path parameter.
+**Solution:** In FastAPI (and Starlette), routes are matched in the order they are **defined** in the router. The `/meta` route was moved to appear before `/{user_id}` in the file. Literal paths always win over parameterized ones when defined first.
+**Learning:** In any path-parameter-based router, any literal sub-path (like `/meta`, `/export`, `/count`) that could be confused with a parameter must be registered *before* the parameterized route. This is a fundamental rule of route ordering in FastAPI/Express/Flask.
+
 ---
 
 ## What I Would Do Differently
@@ -386,15 +403,15 @@ The pre-masked columns fix (eliminating decryption) had 10× more impact on perc
 
 8. **Populate masked columns via a data migration** — The current migration adds `aadhaar_masked` and `pan_masked` as nullable and relies on a code-level fallback for old rows. A proper data migration would populate them for all existing rows at deploy time, eliminating the fallback branch entirely. The challenge: running application-layer decryption inside Alembic requires the encryption key to be available during migration, which complicates CI/CD pipelines.
 
-9. **Search, filter, and sort on the user list** — The assignment explicitly states *"Please feel free to add more APIs and also database columns if you feel their existence is needed for some purpose."* Search and filter are the most natural extensions to a user management system. The full implementation was designed and partially built during this assignment:
-   - `GET /users?search=` — full-text search across name and email using `LOWER(name) LIKE %term%`
-   - `GET /users?place_of_birth=` — exact filter from a dropdown of existing values
-   - `GET /users?dob_year_from=&dob_year_to=` — date of birth year range filter
-   - `GET /users?name_starts_with=` — alphabet quick-filter (A–Z)
-   - `GET /users?sort_by=name&sort_order=asc` — sortable columns
+9. **Search, filter, and sort were added as extra APIs** — The assignment explicitly states *"Please feel free to add more APIs and also database columns if you feel their existence is needed for some purpose."* Search and filter are the most natural and useful extensions to a user management system, so they were implemented:
+   - `GET /users?search=` — full-text search across name and email (`LOWER(name) LIKE %term%`)
+   - `GET /users?place_of_birth=` — exact filter via a populated dropdown
+   - `GET /users?dob_year_from=&dob_year_to=` — date of birth year range
+   - `GET /users?sort_by=name&sort_order=asc` — sortable columns (name, date_of_birth, created_at)
    - `GET /users/meta` — returns unique `place_of_birth` values for the dropdown
-   
-   The backend service and route were fully written and unit-tested (28/28 passing). The frontend had dedicated components built (SearchFilterBar, AlphabetFilter, sortable table headers). However, it was removed from the final submission because of a **Python bytecode caching issue** — the running uvicorn server used stale `.pyc` files and did not pick up the new routes, making the feature appear broken during live testing even though direct service-layer tests confirmed it worked correctly (`search=aarav` returned exactly `total: 1, name: Aarav Sharma`). The lesson: always clear `__pycache__` and do a hard server restart when adding new routes, never rely on hot-reload alone.
+   - Frontend: debounced search bar, Filters dropdown with Place, DOB range, and A→Z/Z→A sort, sortable table column headers, all state in URL params
+
+10. **Start fresh, restart clean** — During development of the search feature, the running uvicorn server was using stale compiled `.pyc` files and refused to pick up the new routes even after the source files were updated. The `/meta` endpoint kept returning "User not found" (being matched by `/{user_id}`) and search returned all records ignoring the filter. Root cause: the old process started before our code changes had the bytecode in memory and `--reload` didn't force a full reimport. Fix: always clear `__pycache__` completely and do a hard process restart. FastAPI TestClient confirmed the code was 100% correct; only the running server was stale. **Lesson:** when a route appears to misbehave after adding new routes, suspect process state before suspecting code.
 
 ---
 
@@ -429,6 +446,9 @@ The pre-masked columns fix (eliminating decryption) had 10× more impact on perc
 - [x] Versioned API prefix `/api/v1` — non-breaking future changes
 - [x] Proper HTTP status codes — 201, 204, 409, 404, 422
 - [x] Global exception handler — no stack traces to clients
+- [x] Search via `LOWER(col) LIKE %term%` — case-insensitive, no full-text index needed at this scale
+- [x] `/meta` endpoint for dropdown values — frontend never hardcodes data that lives in the DB
+- [x] Literal routes (`/meta`) defined before parameterized routes (`/{id}`) — correct FastAPI matching order
 
 ### Frontend
 - [x] TanStack Query — server state managed correctly, not in useState
@@ -437,6 +457,9 @@ The pre-masked columns fix (eliminating decryption) had 10× more impact on perc
 - [x] Zod + React Hook Form — client-side validation mirrors backend rules
 - [x] Axios interceptor — single error normalization point
 - [x] Loading UX — animated bar + table dim during page transitions
+- [x] Debounced search with first-render guard — API not called on mount, only on user input
+- [x] All filter + sort state in URL params — persistent across refresh, shareable
+- [x] Contextual UI — A→Z/Z→A sort lives inside the Filters dropdown, not as separate floating buttons
 
 ### Testing
 - [x] Test isolation — rows wiped between every test via `autouse` fixture
