@@ -7,25 +7,21 @@ import Pagination from '../components/Pagination'
 import UserForm from '../components/UserForm'
 import DeleteDialog from '../components/DeleteDialog'
 import UserViewModal from '../components/UserViewModal'
-import type { User } from '../types/user'
 
 const PAGE_SIZE = 10
 
 export default function UsersPage() {
   const [searchParams, setSearchParams] = useSearchParams()
 
-  // All modal + page state lives in the URL so refreshing restores the exact view
-  const page    = Number(searchParams.get('page')   ?? '1')
-  const viewId  = searchParams.get('view')   ?? ''
-  const editId  = searchParams.get('edit')   ?? ''
+  const page     = Number(searchParams.get('page')   ?? '1')
+  const viewId   = searchParams.get('view')   ?? ''
+  const editId   = searchParams.get('edit')   ?? ''
   const isCreate = searchParams.get('create') === 'true'
 
-  // Delete stays local — no reason to persist a confirmation dialog in the URL
-  const [deleteUser, setDeleteUser] = useState<User | null>(null)
+  // deleteId: local state — no URL persistence needed for a confirmation dialog
+  const [deleteId, setDeleteId] = useState<string | null>(null)
 
-  // Fetch the user being edited so UserForm can pre-fill from the URL directly
   const { data: editingUser } = useUser(editId)
-
   const { data, isLoading, isError, error, refetch, isFetching } = useUsers(page, PAGE_SIZE)
 
   // ── Navigation helpers ──────────────────────────────────────────────────────
@@ -36,8 +32,15 @@ export default function UsersPage() {
   const backToView = (id: string) => setSearchParams({ page: String(page), view: id })
   const goToPage   = (p: number)  => setSearchParams({ page: String(p) })
 
-  // ── Fix: derive startIndex from data.page so serial numbers only change
-  //    when the row data changes, not immediately when the user clicks Next ──
+  // Clicking trash in the table → open view modal so user reviews details first
+  const handleTableDelete = (id: string) => openView(id)
+
+  // Delete button inside view modal → close view modal, open delete confirmation
+  const handleViewDelete = (id: string) => {
+    closeModal()
+    setDeleteId(id)
+  }
+
   const startIndex = ((data?.page ?? 1) - 1) * (data?.size ?? PAGE_SIZE)
 
   return (
@@ -73,11 +76,9 @@ export default function UsersPage() {
         {/* Table card */}
         <div className="bg-white rounded-xl shadow-sm border border-gray-200 relative">
 
-          {/* Page-change loading bar — thin animated stripe at the top of the card */}
           {isFetching && !isLoading && (
             <div className="absolute top-0 left-0 right-0 h-0.5 z-10 overflow-hidden rounded-t-xl bg-blue-100">
-              <div className="h-full bg-blue-500 animate-[loading_1s_ease-in-out_infinite]"
-                style={{ animation: 'loadbar 1.2s ease-in-out infinite' }} />
+              <div className="h-full bg-blue-500" style={{ animation: 'loadbar 1.2s ease-in-out infinite' }} />
             </div>
           )}
 
@@ -100,7 +101,7 @@ export default function UsersPage() {
                 startIndex={startIndex}
                 onView={(user) => openView(user.id)}
                 onEdit={(user) => openEdit(user.id)}
-                onDelete={(user) => setDeleteUser(user)}
+                onDelete={(user) => handleTableDelete(user.id)}
               />
               {data && data.total > 0 && (
                 <Pagination
@@ -116,21 +117,22 @@ export default function UsersPage() {
         </div>
       </div>
 
-      {/* View modal — ?view={id} */}
+      {/* View modal — clicking Delete inside opens the confirmation */}
       {viewId && (
         <UserViewModal
           id={viewId}
           onClose={closeModal}
           onEdit={(id) => openEdit(id)}
+          onDelete={handleViewDelete}
         />
       )}
 
-      {/* Create modal — ?create=true */}
+      {/* Create modal */}
       {isCreate && (
         <UserForm onClose={closeModal} />
       )}
 
-      {/* Edit modal — ?edit={id} — waits for user data before rendering form */}
+      {/* Edit modal */}
       {editId && editingUser && (
         <UserForm
           user={editingUser}
@@ -139,9 +141,9 @@ export default function UsersPage() {
         />
       )}
 
-      {/* Delete confirmation — local state, no URL needed */}
-      {deleteUser && (
-        <DeleteDialog user={deleteUser} onClose={() => setDeleteUser(null)} />
+      {/* Delete confirmation — appears after reviewing user in view modal */}
+      {deleteId && (
+        <DeleteDialog id={deleteId} onClose={() => setDeleteId(null)} />
       )}
     </div>
   )

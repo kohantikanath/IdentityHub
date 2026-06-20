@@ -1,10 +1,11 @@
-import { X } from 'lucide-react'
+import { Trash2, X } from 'lucide-react'
 import { useUser } from '../hooks/useUsers'
 
 interface UserViewModalProps {
   id: string
   onClose: () => void
   onEdit: (id: string) => void
+  onDelete: (id: string) => void
 }
 
 interface FieldProps {
@@ -28,7 +29,7 @@ function formatDate(iso: string) {
   })
 }
 
-export default function UserViewModal({ id, onClose, onEdit }: UserViewModalProps) {
+export default function UserViewModal({ id, onClose, onEdit, onDelete }: UserViewModalProps) {
   // Fetch fresh data by ID — automatically gets the latest values after an edit
   // because useUpdateUser invalidates [USERS_QUERY_KEY] which prefix-matches this key
   const { data: user, isLoading } = useUser(id)
@@ -107,20 +108,29 @@ export default function UserViewModal({ id, onClose, onEdit }: UserViewModalProp
               </div>
             </div>
 
-            {/* Footer */}
-            <div className="flex justify-end gap-3 px-6 py-4 border-t border-gray-100">
+            {/* Footer — delete on the left (destructive), safe actions on the right */}
+            <div className="flex items-center justify-between px-6 py-4 border-t border-gray-100">
               <button
-                onClick={onClose}
-                className="px-4 py-2 text-sm text-gray-600 border border-gray-300 rounded-lg hover:bg-gray-50"
+                onClick={() => onDelete(id)}
+                className="flex items-center gap-2 px-4 py-2 text-sm font-medium text-red-600 border border-red-200 rounded-lg hover:bg-red-50 transition-colors"
               >
-                Close
+                <Trash2 size={14} />
+                Delete
               </button>
-              <button
-                onClick={() => onEdit(id)}
-                className="px-4 py-2 text-sm font-medium text-white bg-blue-600 rounded-lg hover:bg-blue-700"
-              >
-                Edit User
-              </button>
+              <div className="flex gap-3">
+                <button
+                  onClick={onClose}
+                  className="px-4 py-2 text-sm text-gray-600 border border-gray-300 rounded-lg hover:bg-gray-50"
+                >
+                  Close
+                </button>
+                <button
+                  onClick={() => onEdit(id)}
+                  className="px-4 py-2 text-sm font-medium text-white bg-blue-600 rounded-lg hover:bg-blue-700"
+                >
+                  Edit User
+                </button>
+              </div>
             </div>
           </>
         )}
