@@ -103,9 +103,19 @@ With `useSearchParams`, refreshing `?page=2&view=abc-123` reopens page 2 with th
 
 ### 4. Soft Delete
 
-**What:** `DELETE /users/{id}` sets `is_deleted = True`. The row is never removed.
+**What:** `DELETE /users/{id}` sets `is_deleted = True`. The row is never physically removed from the database. All `GET` queries filter `WHERE is_deleted = False` so deleted users are invisible to the API and UI.
 
-**Why:** Hard deletes destroy audit trails. Regulators (SEBI, RBI) require KYC data retention for 7+ years. Soft deletes also enable recovery from accidental deletions. All `GET` queries filter `WHERE is_deleted = False`.
+**The journey — why I chose soft delete over hard delete:**
+
+During development I actually switched this to hard delete (`db.delete(user)`) for a short time, thinking "just remove the row, it's simpler and cleaner." After thinking it through properly I reverted back to soft delete. Here is exactly why:
+
+In real SaaS products, accidental deletions happen — a wrong click, a bad script, an admin error. With a hard delete the row is gone forever and there is absolutely no way to get it back. With soft delete, even though we don't have a "Restore" button in the UI right now, the data is still sitting in the database. If something gets deleted by mistake, a developer can recover it by flipping `is_deleted` back to `False`. That option simply does not exist with hard delete.
+
+This is the standard in production SaaS: **delete from the user's view, not from the database.** The UI treats the user as gone (excluded from all lists, 404 on direct fetch) but the record is preserved for recovery, audits, and regulatory compliance. We can always build a restore feature later. We cannot un-delete a hard-deleted row.
+
+Additionally, systems that store KYC data (Aadhaar, PAN) have data retention requirements. Hard deletes make compliance impossible.
+
+**Learning:** Never choose hard delete as the default for user data in a production system. Soft delete costs one boolean column and one `WHERE` clause. The benefit — the ability to recover from mistakes — is priceless.
 
 ### 5. CORS Restricted to Specific Origin
 

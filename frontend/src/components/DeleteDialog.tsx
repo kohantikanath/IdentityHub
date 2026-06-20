@@ -34,14 +34,14 @@ export default function DeleteDialog({ user, onClose }: DeleteDialogProps) {
             </div>
             <div>
               <h2 className="text-lg font-semibold text-gray-900">Delete User</h2>
-              <p className="text-sm text-gray-500">This action cannot be undone</p>
+              <p className="text-sm text-gray-500">The user will be removed from the system</p>
             </div>
           </div>
 
           <p className="text-sm text-gray-700 mb-6">
             Are you sure you want to delete{' '}
             <span className="font-semibold text-gray-900">{user.name}</span>?{' '}
-            This will permanently remove the user and cannot be undone.
+            They will be removed from all views.
           </p>
 
           {deleteUser.error && (
