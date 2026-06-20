@@ -33,13 +33,19 @@ class User(Base):
     # Soft delete — rows are never physically removed, preserving audit trail
     is_deleted: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
 
-    # Audit timestamps — server_default delegates to MySQL so they are always
-    # accurate regardless of application server timezone
+    # Audit timestamps
+    # server_default=func.now(): MySQL sets the value if a raw SQL INSERT omits the column
+    # default=datetime.utcnow: ORM sets the value explicitly — works in MySQL and SQLite (tests)
+    # onupdate=datetime.utcnow: ORM refreshes updated_at on every UPDATE automatically
     created_at: Mapped[datetime] = mapped_column(
-        DateTime, server_default=func.now(), nullable=False
+        DateTime, default=datetime.utcnow, server_default=func.now(), nullable=False
     )
     updated_at: Mapped[datetime] = mapped_column(
-        DateTime, server_default=func.now(), onupdate=func.now(), nullable=False
+        DateTime,
+        default=datetime.utcnow,
+        server_default=func.now(),
+        onupdate=datetime.utcnow,
+        nullable=False,
     )
 
     # Indexes on columns used in WHERE clauses — avoids full table scans
