@@ -1,13 +1,11 @@
 import axios from 'axios'
-import type { CreateUserPayload, PaginatedResponse, UpdateUserPayload, User } from '../types/user'
+import type { CreateUserPayload, FilterParams, MetaResponse, PaginatedResponse, UpdateUserPayload, User } from '../types/user'
 
 const api = axios.create({
   baseURL: import.meta.env.VITE_API_URL ?? 'http://localhost:8000/api/v1',
   headers: { 'Content-Type': 'application/json' },
 })
 
-// Normalize every error to a plain string message before it reaches components
-// Without this, components would have to parse axios error shapes themselves
 api.interceptors.response.use(
   (response) => response,
   (error) => {
@@ -23,8 +21,20 @@ api.interceptors.response.use(
 )
 
 export const usersApi = {
-  getAll: (page = 1, size = 10): Promise<PaginatedResponse<User>> =>
-    api.get('/users/', { params: { page, size } }).then((r) => r.data),
+  getAll: (page = 1, size = 10, filters: FilterParams = {}): Promise<PaginatedResponse<User>> => {
+    const params: Record<string, unknown> = { page, size }
+    if (filters.search)           params.search           = filters.search
+    if (filters.place_of_birth)   params.place_of_birth   = filters.place_of_birth
+    if (filters.dob_year_from)    params.dob_year_from    = filters.dob_year_from
+    if (filters.dob_year_to)      params.dob_year_to      = filters.dob_year_to
+    if (filters.name_starts_with) params.name_starts_with = filters.name_starts_with
+    if (filters.sort_by)          params.sort_by          = filters.sort_by
+    if (filters.sort_order)       params.sort_order       = filters.sort_order
+    return api.get('/users/', { params }).then((r) => r.data)
+  },
+
+  getMeta: (): Promise<MetaResponse> =>
+    api.get('/users/meta').then((r) => r.data),
 
   getById: (id: string): Promise<User> =>
     api.get(`/users/${id}`).then((r) => r.data),

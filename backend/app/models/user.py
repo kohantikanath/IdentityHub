@@ -52,4 +52,6 @@ class User(Base):
         # Composite index: WHERE is_deleted = FALSE ORDER BY created_at DESC
         # MySQL uses this for both filtering and sorting in one index scan — no separate sort step
         Index("ix_users_is_deleted_created_at", "is_deleted", "created_at"),
+        Index("ix_users_place_of_birth", "place_of_birth"),
+        Index("ix_users_date_of_birth", "date_of_birth"),
     )

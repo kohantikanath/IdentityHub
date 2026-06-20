@@ -4,9 +4,9 @@ export interface User {
   email: string
   primary_mobile: string
   secondary_mobile: string | null
-  aadhaar_number: string   // always masked from API: XXXXXXXX1234
-  pan_number: string       // always masked from API: ABXXXXX34F
-  date_of_birth: string    // ISO date string: YYYY-MM-DD
+  aadhaar_number: string
+  pan_number: string
+  date_of_birth: string
   place_of_birth: string
   current_address: string
   permanent_address: string
@@ -36,5 +36,18 @@ export interface CreateUserPayload {
   permanent_address: string
 }
 
-// All fields optional for PATCH — only send what changed
 export type UpdateUserPayload = Partial<CreateUserPayload>
+
+export interface FilterParams {
+  search?: string
+  place_of_birth?: string
+  dob_year_from?: number
+  dob_year_to?: number
+  name_starts_with?: string
+  sort_by?: string
+  sort_order?: 'asc' | 'desc'
+}
+
+export interface MetaResponse {
+  places_of_birth: string[]
+}
