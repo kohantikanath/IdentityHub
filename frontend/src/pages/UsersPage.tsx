@@ -18,8 +18,9 @@ export default function UsersPage() {
   const editId   = searchParams.get('edit')   ?? ''
   const isCreate = searchParams.get('create') === 'true'
 
-  // deleteId: local state — no URL persistence needed for a confirmation dialog
-  const [deleteId, setDeleteId] = useState<string | null>(null)
+  // Two separate local states for modals that don't need URL persistence
+  const [deleteId, setDeleteId]           = useState<string | null>(null)
+  const [deleteReviewId, setDeleteReviewId] = useState<string | null>(null)
 
   const { data: editingUser } = useUser(editId)
   const { data, isLoading, isError, error, refetch, isFetching } = useUsers(page, PAGE_SIZE)
@@ -32,14 +33,14 @@ export default function UsersPage() {
   const backToView = (id: string) => setSearchParams({ page: String(page), view: id })
   const goToPage   = (p: number)  => setSearchParams({ page: String(p) })
 
-  // Clicking trash in the table → open view modal so user reviews details first
-  const handleTableDelete = (id: string) => openView(id)
+  // Trash icon → open delete-review modal (local state, no Edit button shown)
+  const handleTableDelete = (id: string) => setDeleteReviewId(id)
 
-  // Delete button inside view modal → close view modal, open delete confirmation
-  const handleViewDelete = (id: string) => {
-    closeModal()
-    setDeleteId(id)
-  }
+  // Delete from delete-review modal → close review, open confirmation
+  const handleReviewDelete = (id: string) => { setDeleteReviewId(null); setDeleteId(id) }
+
+  // Delete from row-click view modal → close URL modal, open confirmation
+  const handleViewDelete = (id: string) => { closeModal(); setDeleteId(id) }
 
   const startIndex = ((data?.page ?? 1) - 1) * (data?.size ?? PAGE_SIZE)
 
@@ -117,13 +118,21 @@ export default function UsersPage() {
         </div>
       </div>
 
-      {/* View modal — clicking Delete inside opens the confirmation */}
+      {/* Row-click view modal — Edit User only, no Delete */}
       {viewId && (
         <UserViewModal
           id={viewId}
           onClose={closeModal}
           onEdit={(id) => openEdit(id)}
-          onDelete={handleViewDelete}
+        />
+      )}
+
+      {/* Trash-click review modal — shows only Delete + Close, no Edit */}
+      {deleteReviewId && (
+        <UserViewModal
+          id={deleteReviewId}
+          onClose={() => setDeleteReviewId(null)}
+          onDelete={handleReviewDelete}
         />
       )}
 

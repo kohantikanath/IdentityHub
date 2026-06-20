@@ -4,8 +4,8 @@ import { useUser } from '../hooks/useUsers'
 interface UserViewModalProps {
   id: string
   onClose: () => void
-  onEdit: (id: string) => void
-  onDelete: (id: string) => void
+  onEdit?: (id: string) => void    // omit → no Edit button (row-click view)
+  onDelete?: (id: string) => void  // omit → no Delete button (trash-click review)
 }
 
 interface FieldProps {
@@ -30,6 +30,8 @@ function formatDate(iso: string) {
 }
 
 export default function UserViewModal({ id, onClose, onEdit, onDelete }: UserViewModalProps) {
+  const showEdit   = Boolean(onEdit)
+  const showDelete = Boolean(onDelete)
   // Fetch fresh data by ID — automatically gets the latest values after an edit
   // because useUpdateUser invalidates [USERS_QUERY_KEY] which prefix-matches this key
   const { data: user, isLoading } = useUser(id)
@@ -108,15 +110,20 @@ export default function UserViewModal({ id, onClose, onEdit, onDelete }: UserVie
               </div>
             </div>
 
-            {/* Footer — delete on the left (destructive), safe actions on the right */}
+            {/* Footer — destructive action left, safe actions right */}
             <div className="flex items-center justify-between px-6 py-4 border-t border-gray-100">
-              <button
-                onClick={() => onDelete(id)}
-                className="flex items-center gap-2 px-4 py-2 text-sm font-medium text-red-600 border border-red-200 rounded-lg hover:bg-red-50 transition-colors"
-              >
-                <Trash2 size={14} />
-                Delete
-              </button>
+              {/* Delete only shown when opened from trash icon */}
+              {showDelete ? (
+                <button
+                  onClick={() => onDelete!(id)}
+                  className="flex items-center gap-2 px-4 py-2 text-sm font-medium text-red-600 border border-red-200 rounded-lg hover:bg-red-50 transition-colors"
+                >
+                  <Trash2 size={14} />
+                  Delete
+                </button>
+              ) : (
+                <span />
+              )}
               <div className="flex gap-3">
                 <button
                   onClick={onClose}
@@ -124,12 +131,15 @@ export default function UserViewModal({ id, onClose, onEdit, onDelete }: UserVie
                 >
                   Close
                 </button>
-                <button
-                  onClick={() => onEdit(id)}
-                  className="px-4 py-2 text-sm font-medium text-white bg-blue-600 rounded-lg hover:bg-blue-700"
-                >
-                  Edit User
-                </button>
+                {/* Edit only shown when opened from row click */}
+                {showEdit && (
+                  <button
+                    onClick={() => onEdit!(id)}
+                    className="px-4 py-2 text-sm font-medium text-white bg-blue-600 rounded-lg hover:bg-blue-700"
+                  >
+                    Edit User
+                  </button>
+                )}
               </div>
             </div>
           </>
