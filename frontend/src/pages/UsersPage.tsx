@@ -63,6 +63,7 @@ export default function UsersPage() {
             <>
               <UserTable
                 users={data?.items ?? []}
+                startIndex={(page - 1) * PAGE_SIZE}
                 onView={(user) => setViewUser(user)}
                 onEdit={(user) => setEditUser(user)}
                 onDelete={(user) => setDeleteUser(user)}

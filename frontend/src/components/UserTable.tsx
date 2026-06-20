@@ -3,14 +3,15 @@ import type { User } from '../types/user'
 
 interface UserTableProps {
   users: User[]
+  startIndex: number  // (page - 1) * size — keeps numbering continuous across pages
   onView: (user: User) => void
   onEdit: (user: User) => void
   onDelete: (user: User) => void
 }
 
-const COLUMNS = ['Name', 'Email', 'Primary Mobile', 'Date of Birth', 'Place of Birth', 'Actions']
+const COLUMNS = ['#', 'Name', 'Email', 'Primary Mobile', 'Date of Birth', 'Place of Birth', 'Actions']
 
-export default function UserTable({ users, onView, onEdit, onDelete }: UserTableProps) {
+export default function UserTable({ users, startIndex, onView, onEdit, onDelete }: UserTableProps) {
   if (users.length === 0) {
     return (
       <div className="flex flex-col items-center justify-center py-20 text-gray-400">
@@ -36,12 +37,15 @@ export default function UserTable({ users, onView, onEdit, onDelete }: UserTable
           </tr>
         </thead>
         <tbody className="bg-white divide-y divide-gray-100">
-          {users.map((user) => (
+          {users.map((user, index) => (
             <tr
               key={user.id}
               onClick={() => onView(user)}
               className="hover:bg-blue-50 cursor-pointer transition-colors"
             >
+              <td className="px-6 py-4 text-sm text-gray-400 font-mono whitespace-nowrap">
+                {startIndex + index + 1}
+              </td>
               {/* Name — highlighted to hint it's clickable */}
               <td className="px-6 py-4 text-sm font-medium text-blue-700 whitespace-nowrap">
                 {user.name}
