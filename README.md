@@ -26,6 +26,7 @@ A full-stack User Management application with **encrypted PII storage**, **soft 
 - **Aadhaar and PAN encrypted** at rest with AES-256-GCM — never stored or returned in plaintext
 - **Soft delete** — records are never physically removed, preserving audit trails
 - **Paginated list** — no unbounded queries; page and size are required parameters
+- **Search, filter, and sort** — search by name/email, filter by place of birth and DOB year range, sort A→Z/Z→A
 - **Input validation** on both frontend (Zod) and backend (Pydantic) with identical rules
 - **UUID primary keys** — prevents sequential ID enumeration attacks
 - **28 unit tests** covering all CRUD paths and edge cases
@@ -59,9 +60,12 @@ IdentityHub/
 │   │   ├── lib/validations.ts  # Zod schemas
 │   │   ├── hooks/useUsers.ts   # TanStack Query hooks
 │   │   ├── components/
-│   │   │   ├── UserTable.tsx
-│   │   │   ├── UserForm.tsx     # Create + Edit modal
+│   │   │   ├── UserTable.tsx        # Data table with sortable headers
+│   │   │   ├── UserViewModal.tsx    # Read-only detail view
+│   │   │   ├── UserForm.tsx         # Create + Edit modal
 │   │   │   ├── DeleteDialog.tsx
+│   │   │   ├── SearchFilterBar.tsx  # Search + Filters dropdown
+│   │   │   ├── AlphabetFilter.tsx   # A–Z quick filter (unused, kept for reference)
 │   │   │   └── Pagination.tsx
 │   │   └── pages/UsersPage.tsx
 │   └── .env.example
@@ -168,11 +172,14 @@ Expected output: **28 passed** in under 1 second (uses SQLite in-memory, no MySQ
 | Method | Endpoint | Description | Success |
 |---|---|---|---|
 | `POST` | `/users/` | Create a new user | 201 |
-| `GET` | `/users/?page=1&size=10` | Paginated user list (excludes deleted) | 200 |
+| `GET` | `/users/?page=1&size=10` | Paginated user list with search, filter, sort | 200 |
 | `GET` | `/users/{id}` | Get single user | 200 |
 | `PATCH` | `/users/{id}` | Partial update (only send changed fields) | 200 |
 | `DELETE` | `/users/{id}` | Soft delete (row stays in DB) | 204 |
+| `GET` | `/users/meta` | Unique place_of_birth values for dropdown | 200 |
 | `GET` | `/health` | Health check | 200 |
+
+**Filter params for `GET /users`:** `?search=`, `?place_of_birth=`, `?dob_year_from=`, `?dob_year_to=`, `?sort_by=`, `?sort_order=`
 
 ### Create User — Request Body
 
